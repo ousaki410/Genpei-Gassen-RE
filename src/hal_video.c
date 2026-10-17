@@ -86,6 +86,12 @@ void hal_video_shutdown(void) {
     SDL_Quit();
 }
 
+void hal_video_set_title(const char *title) {
+    if (s_window && title) {
+        SDL_SetWindowTitle(s_window, title);
+    }
+}
+
 void hal_video_set_palette_entry(int index, uint8_t r, uint8_t g, uint8_t b) {
     if (index >= 0 && index < 256) {
         // RGBA8888 packing: (R << 24) | (G << 16) | (B << 8) | 0xFF

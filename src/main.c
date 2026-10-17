@@ -61,6 +61,18 @@ static uint8_t* load_file(const char *rel_path, size_t *out_size) {
     fclose(f);
     return buf;
 }
+static void update_window_title(int cur_officer, bool use_mask) {
+    char title[256];
+    bool is_npc = (cur_officer >= 80 && cur_officer <= 88);
+    snprintf(title, sizeof(title),
+             "《源平合战》 - [%02d/89] %s (%dx%d) | 遮罩: %s | 左右键:换人 空格:切遮罩",
+             cur_officer,
+             is_npc ? "NPC/姬/町人/使者小立绘" : (cur_officer == 89 ? "僧侣立绘" : "大名/武将立绘"),
+             is_npc ? 64 : 128,
+             is_npc ? 80 : 160,
+             use_mask ? "开" : "关");
+    hal_video_set_title(title);
+}
 
 int main(int argc, char *argv[]) {
     const char *screenshot_path = NULL;
@@ -71,6 +83,7 @@ int main(int argc, char *argv[]) {
         snprintf(s_asset_dir, sizeof(s_asset_dir), "%s", env_dir);
     }
 
+    int cur_officer = 0;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--screenshot") == 0 && i + 1 < argc) {
             screenshot_path = argv[++i];
@@ -79,6 +92,10 @@ int main(int argc, char *argv[]) {
             max_frames = atoi(argv[++i]);
         } else if ((strcmp(argv[i], "--data") == 0 || strcmp(argv[i], "-d") == 0) && i + 1 < argc) {
             snprintf(s_asset_dir, sizeof(s_asset_dir), "%s", argv[++i]);
+        } else if ((strcmp(argv[i], "--officer") == 0 || strcmp(argv[i], "-o") == 0) && i + 1 < argc) {
+            cur_officer = atoi(argv[++i]);
+            if (cur_officer < 0) cur_officer = 0;
+            if (cur_officer >= 90) cur_officer = 89;
         }
     }
 
@@ -128,18 +145,12 @@ int main(int argc, char *argv[]) {
         printf("[+] Loaded Hikback.gp background (%dx%d)\n", bg_img.width, bg_img.height);
     }
 
-    int cur_officer = 0;
     bool use_mask = true;
     bool show_bg = true;
     ImageDecoded cur_kao = {0};
 
     kaodata_decompress_officer(kao_data, kao_size, officer_offsets[cur_officer], &cur_kao);
-
-    printf("\n[CONTROLS]:\n");
-    printf("  LEFT / RIGHT ARROW : Previous / Next officer (0..89)\n");
-    printf("  SPACE              : Toggle transparency mask (On/Off)\n");
-    printf("  TAB                : Toggle scenic background\n");
-    printf("  ESC                : Exit\n\n");
+    update_window_title(cur_officer, use_mask);
 
     bool running = true;
     int frame_count = 0;
@@ -152,12 +163,15 @@ int main(int argc, char *argv[]) {
                 cur_officer = (cur_officer + 1) % 90;
                 free_decoded_image(&cur_kao);
                 kaodata_decompress_officer(kao_data, kao_size, officer_offsets[cur_officer], &cur_kao);
+                update_window_title(cur_officer, use_mask);
             } else if (key == SDLK_LEFT) {
                 cur_officer = (cur_officer - 1 + 90) % 90;
                 free_decoded_image(&cur_kao);
                 kaodata_decompress_officer(kao_data, kao_size, officer_offsets[cur_officer], &cur_kao);
+                update_window_title(cur_officer, use_mask);
             } else if (key == SDLK_SPACE) {
                 use_mask = !use_mask;
+                update_window_title(cur_officer, use_mask);
             } else if (key == SDLK_TAB) {
                 show_bg = !show_bg;
             }
@@ -175,19 +189,24 @@ int main(int argc, char *argv[]) {
             hal_video_draw_rect(bg_x - 1, bg_y - 1, bg_img.width + 2, bg_img.height + 2, 7);
         }
 
+        // Determine effective portrait bounds (Officers 80..88 are 64x80 NPC avatars)
+        bool is_npc = (cur_officer >= 80 && cur_officer <= 88);
+        int frame_w = is_npc ? 64 : 128;
+        int frame_h = is_npc ? 80 : 160;
+
         // Draw Japanese PC-98 style border box for Officer Card
         int card_x = 40;
         int card_y = 50;
-        hal_video_fill_rect(card_x - 4, card_y - 4, 128 + 8, 160 + 8, 1);
-        hal_video_draw_rect(card_x - 4, card_y - 4, 128 + 8, 160 + 8, 6);
-        hal_video_draw_rect(card_x - 2, card_y - 2, 128 + 4, 160 + 4, 7);
+        hal_video_fill_rect(card_x - 4, card_y - 4, frame_w + 8, frame_h + 8, 1);
+        hal_video_draw_rect(card_x - 4, card_y - 4, frame_w + 8, frame_h + 8, 6);
+        hal_video_draw_rect(card_x - 2, card_y - 2, frame_w + 4, frame_h + 4, 7);
 
         // Blit Officer Portrait
         if (cur_kao.pixels) {
             if (use_mask && cur_kao.mask) {
-                hal_video_blit_masked(card_x, card_y, cur_kao.width, cur_kao.height, cur_kao.pixels, cur_kao.mask, cur_kao.width);
+                hal_video_blit_masked(card_x, card_y, frame_w, frame_h, cur_kao.pixels, cur_kao.mask, cur_kao.width);
             } else {
-                hal_video_blit_indexed(card_x, card_y, cur_kao.width, cur_kao.height, cur_kao.pixels, cur_kao.width);
+                hal_video_blit_indexed(card_x, card_y, frame_w, frame_h, cur_kao.pixels, cur_kao.width);
             }
         }
 

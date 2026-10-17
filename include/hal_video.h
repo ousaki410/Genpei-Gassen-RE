@@ -13,6 +13,7 @@ typedef struct {
 
 bool hal_video_init(const char *title, int window_scale);
 void hal_video_shutdown(void);
+void hal_video_set_title(const char *title);
 
 void hal_video_set_palette_entry(int index, uint8_t r, uint8_t g, uint8_t b);
 void hal_video_load_pld_bank(const uint8_t *pld_data, int bank_idx);
