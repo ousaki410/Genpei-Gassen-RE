@@ -5,12 +5,50 @@
 #include <stdlib.h>
 #include <string.h>
 
-static uint8_t* load_file(const char *path, size_t *out_size) {
-    FILE *f = fopen(path, "rb");
+static char s_asset_dir[512] = "";
+
+static uint8_t* load_file(const char *rel_path, size_t *out_size) {
+    char candidate[1024];
+    FILE *f = NULL;
+
+    // 1. If explicit asset dir is set
+    if (s_asset_dir[0] != '\0') {
+        snprintf(candidate, sizeof(candidate), "%s/%s", s_asset_dir, rel_path);
+        f = fopen(candidate, "rb");
+    }
+
+    // 2. Direct path relative to cwd
     if (!f) {
-        fprintf(stderr, "[ERROR] Cannot open file: %s\n", path);
+        f = fopen(rel_path, "rb");
+    }
+
+    // 3. One level up (e.g. running from bin/)
+    if (!f) {
+        snprintf(candidate, sizeof(candidate), "../%s", rel_path);
+        f = fopen(candidate, "rb");
+    }
+
+    // 4. Relative to executable binary directory via SDL_GetBasePath
+    if (!f) {
+        char *base = SDL_GetBasePath();
+        if (base) {
+            // try bin/../games/...
+            snprintf(candidate, sizeof(candidate), "%s../%s", base, rel_path);
+            f = fopen(candidate, "rb");
+            if (!f) {
+                // try bin/games/...
+                snprintf(candidate, sizeof(candidate), "%s%s", base, rel_path);
+                f = fopen(candidate, "rb");
+            }
+            SDL_free(base);
+        }
+    }
+
+    if (!f) {
+        fprintf(stderr, "[ERROR] Cannot open file: %s (searched cwd, ../, and binary directory)\n", rel_path);
         return NULL;
     }
+
     fseek(f, 0, SEEK_END);
     long sz = ftell(f);
     fseek(f, 0, SEEK_SET);
@@ -28,12 +66,19 @@ int main(int argc, char *argv[]) {
     const char *screenshot_path = NULL;
     int max_frames = 0;
 
+    const char *env_dir = getenv("YPHZ_DATA_DIR");
+    if (env_dir) {
+        snprintf(s_asset_dir, sizeof(s_asset_dir), "%s", env_dir);
+    }
+
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--screenshot") == 0 && i + 1 < argc) {
             screenshot_path = argv[++i];
             max_frames = 10;
         } else if (strcmp(argv[i], "--frames") == 0 && i + 1 < argc) {
             max_frames = atoi(argv[++i]);
+        } else if ((strcmp(argv[i], "--data") == 0 || strcmp(argv[i], "-d") == 0) && i + 1 < argc) {
+            snprintf(s_asset_dir, sizeof(s_asset_dir), "%s", argv[++i]);
         }
     }
 
