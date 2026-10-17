@@ -270,3 +270,111 @@ bool hal_video_save_bmp(const char *bmp_path) {
     fclose(f);
     return true;
 }
+
+// ---------------------------------------------------------------------------
+// PC-98 / JIS Font Subsystem
+// ---------------------------------------------------------------------------
+static const uint8_t *s_jis_fnt = NULL;
+static size_t s_jis_size = 0;
+static const uint8_t *s_chr_fnt = NULL;
+static size_t s_chr_size = 0;
+
+bool hal_video_load_fonts(const uint8_t *jis_data, size_t jis_size, const uint8_t *chr_data, size_t chr_size) {
+    s_jis_fnt = jis_data;
+    s_jis_size = jis_size;
+    s_chr_fnt = chr_data;
+    s_chr_size = chr_size;
+    return (s_jis_fnt != NULL || s_chr_fnt != NULL);
+}
+
+void hal_video_draw_char_8x16(int x, int y, uint8_t ch, uint8_t color_idx) {
+    if (!s_chr_fnt || (size_t)(ch * 16 + 16) > s_chr_size) return;
+    const uint8_t *glyph = s_chr_fnt + ch * 16;
+    for (int row = 0; row < 16; row++) {
+        uint8_t bits = glyph[row];
+        for (int col = 0; col < 8; col++) {
+            if ((bits >> (7 - col)) & 1) {
+                hal_video_draw_pixel(x + col, y + row, color_idx);
+            }
+        }
+    }
+}
+
+void hal_video_draw_string_8x16(int x, int y, const char *str, uint8_t color_idx) {
+    if (!str) return;
+    int cur_x = x;
+    int cur_y = y;
+    while (*str) {
+        if (*str == '\n') {
+            cur_y += 18;
+            cur_x = x;
+        } else {
+            hal_video_draw_char_8x16(cur_x, cur_y, (uint8_t)*str, color_idx);
+            cur_x += 8;
+        }
+        str++;
+    }
+}
+
+static inline void sjis_to_kuten(uint8_t s1, uint8_t s2, int *out_ku, int *out_ten) {
+    int k, t;
+    if (s1 <= 0x9F) {
+        k = (s1 - 0x81) * 2 + 1;
+    } else {
+        k = (s1 - 0xE0) * 2 + 63;
+    }
+    if (s2 >= 0x9F) {
+        k += 1;
+        t = s2 - 0x7E - 0x20;
+    } else {
+        if (s2 > 0x7F) s2--;
+        t = s2 - 0x1F - 0x20;
+    }
+    *out_ku = k;
+    *out_ten = t;
+}
+
+void hal_video_draw_kanji_16x16(int x, int y, uint8_t s1, uint8_t s2, uint8_t color_idx) {
+    if (!s_jis_fnt) return;
+    int ku = 0, ten = 0;
+    sjis_to_kuten(s1, s2, &ku, &ten);
+    int glyph_idx = -1;
+    if (ku >= 16) {
+        glyph_idx = 1522 + (ku - 16) * 94 + (ten - 1);
+    } else if (ku >= 1) {
+        glyph_idx = 18 + (ku - 1) * 94 + (ten - 1);
+    }
+    if (glyph_idx < 0 || (size_t)(glyph_idx * 32 + 32) > s_jis_size) return;
+
+    const uint8_t *glyph = s_jis_fnt + glyph_idx * 32;
+    for (int row = 0; row < 16; row++) {
+        uint8_t b0 = glyph[row * 2];
+        uint8_t b1 = glyph[row * 2 + 1];
+        for (int col = 0; col < 8; col++) {
+            if ((b0 >> (7 - col)) & 1) hal_video_draw_pixel(x + col, y + row, color_idx);
+            if ((b1 >> (7 - col)) & 1) hal_video_draw_pixel(x + 8 + col, y + row, color_idx);
+        }
+    }
+}
+
+void hal_video_draw_text_sjis(int x, int y, const char *sjis_str, uint8_t color_idx) {
+    if (!sjis_str) return;
+    const uint8_t *p = (const uint8_t*)sjis_str;
+    int cur_x = x;
+    int cur_y = y;
+    while (*p) {
+        if (*p == '\n') {
+            cur_y += 18;
+            cur_x = x;
+            p++;
+        } else if (((*p >= 0x81 && *p <= 0x9F) || (*p >= 0xE0 && *p <= 0xFC)) && *(p + 1)) {
+            uint8_t s1 = *p++;
+            uint8_t s2 = *p++;
+            hal_video_draw_kanji_16x16(cur_x, cur_y, s1, s2, color_idx);
+            cur_x += 16;
+        } else {
+            hal_video_draw_char_8x16(cur_x, cur_y, *p++, color_idx);
+            cur_x += 8;
+        }
+    }
+}

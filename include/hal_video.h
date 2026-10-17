@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 #define PC98_WIDTH  640
 #define PC98_HEIGHT 400
@@ -32,5 +33,12 @@ bool hal_video_poll_event(int *out_key, bool *out_quit);
 bool hal_video_save_bmp(const char *bmp_path);
 
 uint8_t* hal_video_get_framebuffer(void);
+
+// PC-98 / JIS font rendering subsystem
+bool hal_video_load_fonts(const uint8_t *jis_data, size_t jis_size, const uint8_t *chr_data, size_t chr_size);
+void hal_video_draw_char_8x16(int x, int y, uint8_t ch, uint8_t color_idx);
+void hal_video_draw_string_8x16(int x, int y, const char *str, uint8_t color_idx);
+void hal_video_draw_kanji_16x16(int x, int y, uint8_t s1, uint8_t s2, uint8_t color_idx);
+void hal_video_draw_text_sjis(int x, int y, const char *sjis_str, uint8_t color_idx);
 
 #endif // HAL_VIDEO_H
