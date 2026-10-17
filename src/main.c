@@ -61,16 +61,18 @@ static uint8_t* load_file(const char *rel_path, size_t *out_size) {
     fclose(f);
     return buf;
 }
-static void update_window_title(int cur_officer, bool use_mask) {
+static void update_window_title(int cur_officer, bool use_mask, int bg_mode) {
     char title[256];
     bool is_npc = (cur_officer >= 80 && cur_officer <= 88);
+    const char *bg_names[] = {"纯黑展台", "军议大殿(640x400)", "野战军营(288x176)"};
     snprintf(title, sizeof(title),
-             "《源平合战》 - [%02d/89] %s (%dx%d) | 遮罩: %s | 左右键:换人 空格:切遮罩",
-             cur_officer,
-             is_npc ? "NPC/姬/町人/使者小立绘" : (cur_officer == 89 ? "僧侣立绘" : "大名/武将立绘"),
+             "《源平合战》[人物 %02d/90] %s (%dx%d) | 遮罩:%s | 背景:%s | TAB:切背景 空格:遮罩 I:信息框",
+             cur_officer + 1,
+             is_npc ? "NPC/姬/町人/使者小立绘" : (cur_officer == 89 ? "僧兵立绘" : "大名/名将立绘"),
              is_npc ? 64 : 128,
              is_npc ? 80 : 160,
-             use_mask ? "开" : "关");
+             use_mask ? "开" : "关",
+             bg_names[bg_mode % 3]);
     hal_video_set_title(title);
 }
 
@@ -136,21 +138,30 @@ int main(int argc, char *argv[]) {
     }
     printf("[+] Loaded Kaodata.gp (%zu bytes)\n", kao_size);
 
-    // 4. Load a background graphic if available (Hikback.gp)
-    size_t bg_size = 0;
-    uint8_t *bg_data = load_file("games/yphz/Hikback.gp", &bg_size);
-    ImageDecoded bg_img = {0};
-    if (bg_data) {
-        nup4_decompress_block(bg_data, bg_size, 0, &bg_img, NULL);
-        printf("[+] Loaded Hikback.gp background (%dx%d)\n", bg_img.width, bg_img.height);
+    // 4. Load scenic backgrounds
+    size_t bg_hik_sz = 0;
+    uint8_t *bg_hik_data = load_file("games/yphz/Hikback.gp", &bg_hik_sz);
+    ImageDecoded bg_hik = {0};
+    if (bg_hik_data) {
+        nup4_decompress_block(bg_hik_data, bg_hik_sz, 0, &bg_hik, NULL);
+        printf("[+] Loaded Hikback.gp background (%dx%d)\n", bg_hik.width, bg_hik.height);
+    }
+
+    size_t bg_cmd_sz = 0;
+    uint8_t *bg_cmd_data = load_file("games/yphz/Maincmd2.gp", &bg_cmd_sz);
+    ImageDecoded bg_palace = {0};
+    if (bg_cmd_data) {
+        nup4_decompress_block(bg_cmd_data, bg_cmd_sz, 0, &bg_palace, NULL);
+        printf("[+] Loaded Maincmd2.gp palace screen (%dx%d)\n", bg_palace.width, bg_palace.height);
     }
 
     bool use_mask = true;
-    bool show_bg = true;
+    int bg_mode = 1; // 0: Pure black, 1: 640x400 Palace, 2: 288x176 Tactical
+    bool show_info = true;
     ImageDecoded cur_kao = {0};
 
     kaodata_decompress_officer(kao_data, kao_size, officer_offsets[cur_officer], &cur_kao);
-    update_window_title(cur_officer, use_mask);
+    update_window_title(cur_officer, use_mask, bg_mode);
 
     bool running = true;
     int frame_count = 0;
@@ -163,30 +174,34 @@ int main(int argc, char *argv[]) {
                 cur_officer = (cur_officer + 1) % 90;
                 free_decoded_image(&cur_kao);
                 kaodata_decompress_officer(kao_data, kao_size, officer_offsets[cur_officer], &cur_kao);
-                update_window_title(cur_officer, use_mask);
+                update_window_title(cur_officer, use_mask, bg_mode);
             } else if (key == SDLK_LEFT) {
                 cur_officer = (cur_officer - 1 + 90) % 90;
                 free_decoded_image(&cur_kao);
                 kaodata_decompress_officer(kao_data, kao_size, officer_offsets[cur_officer], &cur_kao);
-                update_window_title(cur_officer, use_mask);
+                update_window_title(cur_officer, use_mask, bg_mode);
             } else if (key == SDLK_SPACE) {
                 use_mask = !use_mask;
-                update_window_title(cur_officer, use_mask);
+                update_window_title(cur_officer, use_mask, bg_mode);
             } else if (key == SDLK_TAB) {
-                show_bg = !show_bg;
+                bg_mode = (bg_mode + 1) % 3;
+                update_window_title(cur_officer, use_mask, bg_mode);
+            } else if (key == SDLK_i) {
+                show_info = !show_info;
             }
         }
 
         // --- Render Frame ---
         hal_video_clear(0); // Color 0 (Black)
 
-        // Draw scenic background if enabled
-        if (show_bg && bg_img.pixels) {
-            // Center background or tile it
-            int bg_x = (PC98_WIDTH - bg_img.width) / 2;
+        // Draw background according to mode
+        if (bg_mode == 1 && bg_palace.pixels) {
+            hal_video_blit_indexed(0, 0, bg_palace.width, bg_palace.height, bg_palace.pixels, bg_palace.width);
+        } else if (bg_mode == 2 && bg_hik.pixels) {
+            int bg_x = (PC98_WIDTH - bg_hik.width) / 2;
             int bg_y = 40;
-            hal_video_blit_indexed(bg_x, bg_y, bg_img.width, bg_img.height, bg_img.pixels, bg_img.width);
-            hal_video_draw_rect(bg_x - 1, bg_y - 1, bg_img.width + 2, bg_img.height + 2, 7);
+            hal_video_blit_indexed(bg_x, bg_y, bg_hik.width, bg_hik.height, bg_hik.pixels, bg_hik.width);
+            hal_video_draw_rect(bg_x - 1, bg_y - 1, bg_hik.width + 2, bg_hik.height + 2, 7);
         }
 
         // Determine effective portrait bounds (Officers 80..88 are 64x80 NPC avatars)
@@ -210,14 +225,17 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        // Draw Info Box
-        int info_x = card_x + 128 + 20;
-        int info_y = card_y;
-        int info_w = 400;
-        int info_h = 160;
-        hal_video_fill_rect(info_x, info_y, info_w, info_h, 4); // Dark blue
-        hal_video_draw_rect(info_x, info_y, info_w, info_h, 6); // Gold border
-        hal_video_draw_rect(info_x + 2, info_y + 2, info_w - 4, info_h - 4, 7); // White inner
+        // Draw Info Box (Authentic KOEI Navy Blue dialog card, toggled via 'I')
+        if (show_info) {
+            int info_x = card_x + frame_w + 16;
+            int info_y = card_y;
+            int info_w = PC98_WIDTH - info_x - 30;
+            if (info_w > 420) info_w = 420;
+            int info_h = frame_h + 8;
+            hal_video_fill_rect(info_x, info_y, info_w, info_h, 1); // Authentic KOEI Navy Blue (Color 1)
+            hal_video_draw_rect(info_x, info_y, info_w, info_h, 6); // Gold border
+            hal_video_draw_rect(info_x + 2, info_y + 2, info_w - 4, info_h - 4, 7); // White inner
+        }
 
         // Draw Title Bar
         hal_video_fill_rect(0, 0, PC98_WIDTH, 20, 1);
@@ -249,7 +267,8 @@ int main(int argc, char *argv[]) {
     }
 
     free_decoded_image(&cur_kao);
-    if (bg_img.pixels) free_decoded_image(&bg_img);
+    if (bg_hik.pixels) free_decoded_image(&bg_hik);
+    if (bg_palace.pixels) free_decoded_image(&bg_palace);
     if (pld_data) free(pld_data);
     if (exe_data) free(exe_data);
     if (kao_data) free(kao_data);
