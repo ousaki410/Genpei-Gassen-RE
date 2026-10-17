@@ -1,0 +1,6 @@
+*.o
+bin/
+/tmp/
+*.log
+stderr.txt
+stdout.txt

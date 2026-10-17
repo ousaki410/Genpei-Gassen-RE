@@ -1,0 +1,196 @@
+#include "hal_video.h"
+#include "decompress.h"
+#include <SDL2/SDL.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static uint8_t* load_file(const char *path, size_t *out_size) {
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        fprintf(stderr, "[ERROR] Cannot open file: %s\n", path);
+        return NULL;
+    }
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    uint8_t *buf = (uint8_t*)malloc(sz);
+    if (buf) {
+        fread(buf, 1, sz, f);
+        if (out_size) *out_size = (size_t)sz;
+    }
+    fclose(f);
+    return buf;
+}
+
+int main(int argc, char *argv[]) {
+    const char *screenshot_path = NULL;
+    int max_frames = 0;
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--screenshot") == 0 && i + 1 < argc) {
+            screenshot_path = argv[++i];
+            max_frames = 10;
+        } else if (strcmp(argv[i], "--frames") == 0 && i + 1 < argc) {
+            max_frames = atoi(argv[++i]);
+        }
+    }
+
+    if (!hal_video_init("《源平合战》 - Linux Native Video Engine (SDL2/PC-98)", 2)) {
+        return 1;
+    }
+
+    // 1. Load Mainpal.pld
+    size_t pld_size = 0;
+    uint8_t *pld_data = load_file("games/yphz/Mainpal.pld", &pld_size);
+    if (pld_data) {
+        hal_video_load_pld_bank(pld_data, 0);
+        printf("[+] Loaded Mainpal.pld Bank 0 (16-color PC-98 GBR palette)\n");
+    }
+
+    // 2. Read 90 officer offsets from Main.exe at 0x4d3bb
+    size_t exe_size = 0;
+    uint8_t *exe_data = load_file("games/yphz/Main.exe", &exe_size);
+    uint32_t officer_offsets[90];
+    officer_offsets[0] = 0;
+    if (exe_data && exe_size > 0x4D3BB + 89 * 4) {
+        for (int i = 1; i < 90; i++) {
+            uint32_t off = exe_data[0x4D3BB + (i - 1) * 4] |
+                          (exe_data[0x4D3BB + (i - 1) * 4 + 1] << 8) |
+                          (exe_data[0x4D3BB + (i - 1) * 4 + 2] << 16) |
+                          (exe_data[0x4D3BB + (i - 1) * 4 + 3] << 24);
+            officer_offsets[i] = off;
+        }
+        printf("[+] Parsed 90 officer offsets from Main.exe:0x4d3bb\n");
+    }
+
+    // 3. Load Kaodata.gp
+    size_t kao_size = 0;
+    uint8_t *kao_data = load_file("games/yphz/Kaodata.gp", &kao_size);
+    if (!kao_data) {
+        fprintf(stderr, "[ERROR] Failed to load games/yphz/Kaodata.gp\n");
+        return 1;
+    }
+    printf("[+] Loaded Kaodata.gp (%zu bytes)\n", kao_size);
+
+    // 4. Load a background graphic if available (Hikback.gp)
+    size_t bg_size = 0;
+    uint8_t *bg_data = load_file("games/yphz/Hikback.gp", &bg_size);
+    ImageDecoded bg_img = {0};
+    if (bg_data) {
+        nup4_decompress_block(bg_data, bg_size, 0, &bg_img, NULL);
+        printf("[+] Loaded Hikback.gp background (%dx%d)\n", bg_img.width, bg_img.height);
+    }
+
+    int cur_officer = 0;
+    bool use_mask = true;
+    bool show_bg = true;
+    ImageDecoded cur_kao = {0};
+
+    kaodata_decompress_officer(kao_data, kao_size, officer_offsets[cur_officer], &cur_kao);
+
+    printf("\n[CONTROLS]:\n");
+    printf("  LEFT / RIGHT ARROW : Previous / Next officer (0..89)\n");
+    printf("  SPACE              : Toggle transparency mask (On/Off)\n");
+    printf("  TAB                : Toggle scenic background\n");
+    printf("  ESC                : Exit\n\n");
+
+    bool running = true;
+    int frame_count = 0;
+    while (running) {
+        int key = 0;
+        bool quit = false;
+        while (hal_video_poll_event(&key, &quit)) {
+            if (quit) running = false;
+            if (key == SDLK_RIGHT) {
+                cur_officer = (cur_officer + 1) % 90;
+                free_decoded_image(&cur_kao);
+                kaodata_decompress_officer(kao_data, kao_size, officer_offsets[cur_officer], &cur_kao);
+            } else if (key == SDLK_LEFT) {
+                cur_officer = (cur_officer - 1 + 90) % 90;
+                free_decoded_image(&cur_kao);
+                kaodata_decompress_officer(kao_data, kao_size, officer_offsets[cur_officer], &cur_kao);
+            } else if (key == SDLK_SPACE) {
+                use_mask = !use_mask;
+            } else if (key == SDLK_TAB) {
+                show_bg = !show_bg;
+            }
+        }
+
+        // --- Render Frame ---
+        hal_video_clear(0); // Color 0 (Black)
+
+        // Draw scenic background if enabled
+        if (show_bg && bg_img.pixels) {
+            // Center background or tile it
+            int bg_x = (PC98_WIDTH - bg_img.width) / 2;
+            int bg_y = 40;
+            hal_video_blit_indexed(bg_x, bg_y, bg_img.width, bg_img.height, bg_img.pixels, bg_img.width);
+            hal_video_draw_rect(bg_x - 1, bg_y - 1, bg_img.width + 2, bg_img.height + 2, 7);
+        }
+
+        // Draw Japanese PC-98 style border box for Officer Card
+        int card_x = 40;
+        int card_y = 50;
+        hal_video_fill_rect(card_x - 4, card_y - 4, 128 + 8, 160 + 8, 1);
+        hal_video_draw_rect(card_x - 4, card_y - 4, 128 + 8, 160 + 8, 6);
+        hal_video_draw_rect(card_x - 2, card_y - 2, 128 + 4, 160 + 4, 7);
+
+        // Blit Officer Portrait
+        if (cur_kao.pixels) {
+            if (use_mask && cur_kao.mask) {
+                hal_video_blit_masked(card_x, card_y, cur_kao.width, cur_kao.height, cur_kao.pixels, cur_kao.mask, cur_kao.width);
+            } else {
+                hal_video_blit_indexed(card_x, card_y, cur_kao.width, cur_kao.height, cur_kao.pixels, cur_kao.width);
+            }
+        }
+
+        // Draw Info Box
+        int info_x = card_x + 128 + 20;
+        int info_y = card_y;
+        int info_w = 400;
+        int info_h = 160;
+        hal_video_fill_rect(info_x, info_y, info_w, info_h, 4); // Dark blue
+        hal_video_draw_rect(info_x, info_y, info_w, info_h, 6); // Gold border
+        hal_video_draw_rect(info_x + 2, info_y + 2, info_w - 4, info_h - 4, 7); // White inner
+
+        // Draw Title Bar
+        hal_video_fill_rect(0, 0, PC98_WIDTH, 20, 1);
+        hal_video_draw_rect(0, 0, PC98_WIDTH, 20, 7);
+
+        // Draw Color Palette Swatches at the bottom
+        int sw_x = 40;
+        int sw_y = 350;
+        int sw_w = 32;
+        int sw_h = 16;
+        for (int c = 0; c < 16; c++) {
+            hal_video_fill_rect(sw_x + c * (sw_w + 2), sw_y, sw_w, sw_h, c);
+            hal_video_draw_rect(sw_x + c * (sw_w + 2), sw_y, sw_w, sw_h, 7);
+        }
+
+        hal_video_present();
+
+        if (screenshot_path && frame_count == 2) {
+            hal_video_save_bmp(screenshot_path);
+            printf("[+] Captured engine screenshot to %s\n", screenshot_path);
+        }
+
+        frame_count++;
+        if (max_frames > 0 && frame_count >= max_frames) {
+            running = false;
+        }
+
+        SDL_Delay(16); // ~60 FPS
+    }
+
+    free_decoded_image(&cur_kao);
+    if (bg_img.pixels) free_decoded_image(&bg_img);
+    if (pld_data) free(pld_data);
+    if (exe_data) free(exe_data);
+    if (kao_data) free(kao_data);
+
+    hal_video_shutdown();
+    printf("[+] Engine cleanly stopped.\n");
+    return 0;
+}
