@@ -56,6 +56,10 @@ SDL_VIDEODRIVER=dummy ./bin/yphz_engine --frames 5 --screenshot /tmp/shot.bmp
 │   ├── input.h             #   统一输入层 API（InputState / YphzKey）
 │   ├── message.h           #   Message.gp（LS11 文本）API
 │   ├── scenario.h          #   剧本数据结构（武将/城池/势力）
+│   ├── turn.h              #   回合/内政状态机（含按势力参数化命令）
+│   ├── kassen.h            #   合战状态机（战术/一騎討/夺城/守城）
+│   ├── ai.h                #   非玩家势力 AI（内政 + 战略出阵报告）
+│   ├── event.h             #   历史事件表（年月 / 落城 → Mainevt 块）
 │   └── sdl_compat.h        #   SDL2/SDL3 唯一引入点
 ├── src/                    # 引擎源码（C11）
 │   ├── main.c              #   入口：CLI、资源装载、双模式渲染主循环
@@ -65,6 +69,8 @@ SDL_VIDEODRIVER=dummy ./bin/yphz_engine --frames 5 --screenshot /tmp/shot.bmp
 │   ├── message.c           #   Message.gp（LS11 容器 + 字符串表 + 显示清洗）
 │   ├── turn.c              #   回合/月份推进 + 开发/征兵/征税/移動
 │   ├── kassen.c            #   合战：战术结算、一騎討、夺城、天下統一判定
+│   ├── ai.c                #   全势力 AI 月度决策（内政 + 出阵 + 守城触发）
+│   ├── event.c             #   历史事件表（源平合战年表 + 落城触发）
 │   ├── npk.c               #   NPK016 通用容器索引（按需解压单块）
 │   └── scenario.c          #   Sndata.gp 剧本解析 + 静态历史数据表
 ├── tools/                  # Python 逆向工具（Pillow）
@@ -144,11 +150,14 @@ cmake --build build -j
 | `--do-cmd <cmd>` | — | — | 无头执行一次内政命令：`develop` / `recruit` / `tax` / `move` / `officers` / `end`；自动选中该城首个未行动武将并弹出带立绘的结算框（`move` 需配合 `--move-to`） |
 | `--move-to <n>` | — | 首个己方邻城 | `--do-cmd move` 的目标城；必须是当前城的己方相邻城 |
 | `--attack <from,to>` | — | — | 无头发动合战：从 `from` 城进攻相邻敌城 `to`，自动选择城内武力最高的未行动武将，直接进入合战界面 |
-| `--battle-plan <cmds>` | — | — | 与 `--attack` 配合，按帧自动执行战术：`charge` / `volley` / `duel` / `retreat`，逗号分隔（如 `volley,charge`）；用于无头验证胜利、败北、退却与夺城 |
-| `--shot-frame <n>` | — | `2` | 指定 `--screenshot` 在第 n 帧抓图（便于截取合战过程/胜利结算/夺城后的地图） |
+| `--battle-plan <cmds>` | — | — | 与 `--attack` / `--defend` 配合，按帧自动执行战术：`charge` / `volley` / `duel` / `retreat` / `hold`，逗号分隔（如 `volley,charge`）；索引相对合战起始帧，用于无头验证胜利、败北、退却、守城与夺城 |
+| `--defend <from,to>` | — | — | 无头**守城战**：`from` 城（AI 势力）进攻相邻的玩家城 `to`，玩家作为守方应战（`1`/`2`/`3`/`4` = 突撃/斉射/一騎討/籠城） |
+| `--ai-step` | — | — | 无头推进一个月并运行**全势力 AI**（内政 + 战略出阵），打印 `[AI]` 决策日志；AI 攻打玩家城池时自动切入守城战（可由 `--battle-plan` 驱动） |
+| `--trigger-event <n>` | — | — | 立即播放第 n 个历史事件（0..12）：`Mainevt.gp` 对应块 CG + `Message.gp` 台词，配合 `--screenshot` 无头验证 |
+| `--shot-frame <n>` | — | `2` | 指定 `--screenshot` 在第 n 帧抓图（便于截取合战过程/胜利结算/夺城后的地图/事件 CG） |
 | `--unified` | — | — | 调试用：把 39 城全部划归玩家势力并立即播放「天下統一」结局 CG（用于无头验证） |
 | `--end-turn <n>` | — | `0` | 无头连续推进 n 个月（跨年进位），并弹出最后一月的收入结算框 |
-| `--click <x,y[@frame]>` | — | — | 向 `InputState` 注入一次逻辑坐标左键点击边沿；可重复，亦可用 `;` 串联（`--click '560,75@1;200,103@2'`），默认从第 1 帧起逐帧分配 |
+| `--click <[r]x,y[@frame]>` | — | — | 向 `InputState` 注入一次逻辑坐标点击边沿（前缀 `r` 为右键）；可重复，亦可用 `;` 串联（`--click '560,75@1;200,103@2'`），默认从第 1 帧起逐帧分配 |
 | `--preview-npk <file> <block>` | — | — | 独立预览任意 NPK016 容器块（居中/全屏渲染），配合 `--screenshot` 无头验证 |
 | `--gallery <pack>` | — | — | 直接打开 NPK 画廊并定位到第 n 个包（0=Logo, 1=Mainevt, 2=Mainitem, 3=Mainstl, 4=Maincmd2, 5=Hkeshiki, 6=Hkumi, 7=Hikback） |
 | `--frames <n>` | — | `0` | 运行 n 帧后自动退出（`0` = 无限，用于回归/无头测试） |
@@ -204,6 +213,22 @@ SDL_VIDEODRIVER=dummy ./bin/yphz_engine --attack 30,29 --battle-plan duel \
 SDL_VIDEODRIVER=dummy ./bin/yphz_engine --attack 30,29 --battle-plan retreat \
     --frames 6 --shot-frame 2 --screenshot /tmp/retreat.bmp
 
+# 子任务 7：势力 AI / 守城战 / 历史事件
+# 全势力 AI 一个月：打印内政与出阵决策，并在 AI 进攻玩家时切入守城战
+SDL_VIDEODRIVER=dummy ./bin/yphz_engine --ai-step --frames 4 --shot-frame 2 --screenshot /tmp/ai.bmp
+
+# 守城战（AI 29 号城 → 玩家 30 号城）：籠城/斉射/一騎討/突撃
+SDL_VIDEODRIVER=dummy ./bin/yphz_engine --defend 29,30 --battle-plan hold,volley,volley,charge \
+    --frames 12 --shot-frame 4 --screenshot /tmp/defend.bmp
+
+# 历史事件 CG + 台词（0..12）：0=源氏挙兵 1=富士川 2=倶利伽羅峠 3=一ノ谷 4=屋島 5=壇ノ浦 …
+SDL_VIDEODRIVER=dummy ./bin/yphz_engine --trigger-event 2 --frames 3 --shot-frame 2 --screenshot /tmp/event_kurikara.bmp
+
+# 端到端：終了 → AI → 结算框 → 右键关闭 → 历史事件 →（自动过场）→ 守城战
+SDL_VIDEODRIVER=dummy ./bin/yphz_engine --map \
+    --click '560,231@1;r300,300@3' --battle-plan hold,volley,duel,charge \
+    --frames 24 --shot-frame 6 --screenshot /tmp/chain.bmp
+
 # 天下統一结局 CG（强制统一）
 SDL_VIDEODRIVER=dummy ./bin/yphz_engine --unified --frames 2 --screenshot /tmp/ending.bmp
 ```
@@ -222,6 +247,8 @@ SDL_VIDEODRIVER=dummy ./bin/yphz_engine --unified --frames 2 --screenshot /tmp/e
 | 合戦 | `1` / `2` / `3` / `4` | 突撃 / 斉射 / 一騎討 / 退却（也可直接点击底部按钮） |
 | 合戦 | `ESC` | 从战场退却（等同 `4`） |
 | 合戦 | 左键 / 任意键 | 胜利/败北/退却结算框出现后，关闭并结算夺城 |
+| 守城戦 | `1` / `2` / `3` / `4` | 突撃 / 斉射 / 一騎討 / **籠城**（AI 进攻玩家城池时，玩家作为守方应战） |
+| 事件 | 左键 / 右键 / 任意键 | 关闭历史事件 CG（`Mainevt.gp`）演出 |
 | 地图 | `[` / `]` | 上一 / 下一城池 |
 | 地图 | `O` / `Enter` | 查看当前城城主（跳转立绘） |
 | 地图 | `C` / `Space` | 开/关城池情报卡（己方城池会同时弹出指令菜单） |
@@ -437,7 +464,7 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
 
 ### 一、源码文件职责与已实现功能
 
-**`src/main.c`（2299 行）— 入口与渲染主循环**
+**`src/main.c`（2615 行）— 入口与渲染主循环**
 - CLI 参数解析（见上表）+ `YPHZ_DATA_DIR` 环境变量。
 - 资源装载 `load_file()`：`Mainpal.pld`、`JIS.FNT`/`FONT.CHR`、`Main.exe`（读
   `0x4D3BB` 处 90 个立绘偏移表）、`Kaodata.gp`、`Hikback.gp`、`Maincmd2.gp`、
@@ -463,13 +490,14 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
   兵力/士気/城防条、战况日志、四战术按钮，叠加 `Hkumi.gp`/`Hikback.gp` 一騎討特写
   与胜利/败北/退却结算框；`render_ending()` 绘制天下統一结局 CG。
 
-**`src/turn.c`（443 行）— 回合与内政/军事状态机**
+**`src/turn.c`（497 行）— 回合与内政/军事状态机**
 - `TurnState`：玩家势力、`year/month`（与 `Scenario` 双向同步）、401 人 `acted`
   位图（本回合是否已行动）。
-- `turn_find_idle_officer()`：优先城主，其次按编号取城内首个未行动武将。
+- `turn_find_idle_officer()`：优先城主，其次按编号取城内首个未行动武将；
+  `..._faction()` 变体供 AI 针对任意势力选人。
 - `turn_list_castle_officers()`：枚举某势力驻某城的全部在籍武将（名册/选人用）。
-- `turn_list_move_targets()` / `turn_find_attack_officer()`：己方邻城列表 / 城内武力最高
-  的未行动攻方武将（供 `出陣` 与无头 `--attack` 自动选将）。
+- `turn_list_move_targets()` / `turn_find_attack_officer(_faction)()`：己方邻城列表 /
+  城内武力最高的未行动攻方武将（供 `出陣` 与无头 `--attack` 自动选将）。
 - `turn_move_officer()`：向己方邻城转移 1/3 兵力（至少 1），消耗行动；城主离开时
   自动改立城内下一名武将。
 - 三条内政命令（消耗执行武将的 action）：
@@ -482,28 +510,58 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
   `金 += max(20, 石高/50)`，逢 3/6/9/12 月 `石高 += max(10, 石高/60)`；
   重置全员 `acted`。战报只汇总玩家势力收入。
 - `turn_run_command_officer()`：可指定执行武将（名册点选），`-1` 则自动选人。
+- `turn_run_faction_command()`（子任务 7）：把内政执行逻辑抽出为按 **势力** 参数化的
+  `run_domestic_command()`，供 AI 对任意非玩家势力执行 開発/徴兵/徴税 并消耗行动。
 
-**`src/kassen.c`（382 行）— 合战模块**
+**`src/kassen.c`（560 行）— 合战模块**
 - `KassenState`：攻/守城与势力、双方主将、城内初始兵力、野战兵力、士気、城防、
-  回合计数、`finished`/`victory`/`retreated`、最近一次伤亡与一览文本。
+  回合计数、`finished`/`victory`/`retreated`/`player_defends`、最近一次伤亡与一览文本。
 - `kassen_list_targets()` / `kassen_can_attack()`：己方城的敌方邻城列表 / 合法性校验。
 - `kassen_begin()`：守方守军 = 城内兵力、野战兵力 = 3/4（不足 80 全出），攻方同理；
   随机种子由（攻/守城 ID、攻方武将、月份）确定性生成，便于无头复现。
+- `kassen_begin_defense()`（子任务 7）：AI 进攻玩家城时，玩家担任守方，置
+  `player_defends = true`；其余初始化同 `kassen_begin()`。
 - `kassen_command()` 四战术：
   - **突撃**：高杀伤、自损也高（武力/統率主导）；
   - **斉射**：稳定削减守方兵力与城防；
   - **一騎討**：双方主将按武力差一掷定胜负，败方兵力重创并置一騎討特写标志；
-  - **退却**：保留攻方兵力直接结算为撤退。
+  - **退却**：保留攻方兵力直接结算为撤退；
+  - **籠城**（子任务 7）：守方第五战术，稳住城防、减少伤亡。
   - 守方兵力或城防归零 → 攻方胜利；攻方兵力归零 → 败北（守方保留城）。
+- **AI 与自动结算**（子任务 7）：
+  - `kassen_ai_attack_decide()` / `kassen_ai_defend_decide()`：按兵力/城防/士気差
+    以确定性随机选择战术；
+  - `kassen_defense_round()`：守城战一个回合 —— 先由 AI 攻方出招，再由玩家守方下令；
+  - `kassen_auto_resolve()`：AI vs AI 自动推演（≤40 回合），直接结算夺城。
 - `kassen_apply_result()`：胜利则转移城池归属/城主/守军，残存守将退往旧势力其他
   城池（无城则退隐）；攻方残部返回出发城。撤退时守方原状、攻方兵力回城。
 - `kassen_is_unified()`：39 城同属一势力则为真（触发天下統一结局）。
-- `kassen_command_ascii()` / `kassen_text()`：无头日志与 SJIS 结算文本。
+- `kassen_command_ascii()` / `kassen_defense_name()` / `kassen_text()`：无头日志与
+  SJIS 结算文本。
+
+**`src/ai.c`（174 行）— 非玩家势力 AI（子任务 7）**
+- `ai_run_turn()`：玩家 `終了`（或 `--ai-step`）后，除玩家势力外的每个存活势力依次行动。
+- **内政**：每城每月至多 2 次，优先「兵力 < 上限 3/4 且金糧充足 → 徴兵」，
+  其次「金 < 800 → 徴税」，否则 開発。
+- **战略出阵**：城池兵力 `> 400` 且存在「兵力差 > 180」的相邻敌城时，按
+  `AI_ATTACK_CHANCE (40%)` 概率出兵；攻方武将自动选武力最高者并消耗行动。
+- 攻打 **AI 城** → `kassen_auto_resolve()` 自动推演并计入 `captures`；攻打
+  **玩家城** → 压入 `pending[]` 队列（上限 8），由主循环顺序切入守城战。
+- 决策随机数由 `(year, month, faction)` 确定性播种（xorshift32），`--ai-step`
+  输出逐字节可复现。
+
+**`src/event.c`（75 行）+ `include/event.h` — 历史事件表（子任务 7）**
+- `HistoricalEvent`：`year/month`、`Mainevt.gp` 块号、`trigger_castle`、
+  SJIS 标题、`Message.gp` 关键词。
+- `event_match_date()`：源平年表 —— 1180/9 源氏挙兵、1180/10 富士川、1183/5
+  倶利伽羅峠、1184/2 一ノ谷、1185/2 屋島、1185/3 壇ノ浦。
+- `event_match_castle_fall()`：落城事件 —— 平泉（38）陷落、屋島（6）陷落。
+- 事件触发后主循环叠加 `Mainevt.gp` CG + `Message.gp` 台词（按关键词检索）。
 
 **`src/npk.c`（64 行）— NPK016 通用容器访问**
 - `npk_load()` 扫描文件中全部 `NPK016` magic 并记录块偏移；`npk_decode()` 按块
   调用 `nup4_decompress_block()`；`npk_free()` 释放容器。
-- 供 `--preview-npk`、`L`/`I` 画廊与后续合战背景按需使用，避免一次性占用数 MB 解码缓冲。
+- 供 `--preview-npk`、`L`/`I` 画廊、合战背景与事件 CG 按需使用，避免一次性占用数 MB 解码缓冲。
 
 **`src/hal_video.c`（377 行）— 视频 / 字体 HAL**
 - SDL2 窗口/渲染器/纹理初始化（640x400 逻辑分辨率，nearest 缩放，加速失败回退软件）。
@@ -556,7 +614,8 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
 `Scenario`）、`decompress.h`（`ImageDecoded` + `ls11_decompress_stream`）、
 `hal_video.h`（`ColorRGBA` + HAL/字体 API）、`input.h`（`YphzKey`/`InputState`）、
 `message.h`（`MessageFile`/`MessageEntry`）、`turn.h`（`TurnState`/`TurnCommand`/
-`TurnResult`）、`kassen.h`（`KassenState`/`KassenCommand`）、`npk.h`（`NpkFile`）、
+`TurnResult`）、`kassen.h`（`KassenState`/`KassenCommand`）、`ai.h`（`AiReport`/
+`AiPendingBattle`）、`event.h`（`HistoricalEvent`）、`npk.h`（`NpkFile`）、
 `sdl_compat.h`（SDL2/SDL3 引入切换）。
 所有结构体 `#pragma pack(push,1)`。
 
@@ -591,22 +650,27 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
 - 合战闭环：`Hkeshiki.gp` 全屏战场背景 + 双方 `Kaodata.gp` 立绘/兵力/士気/城防条，
   突撃/斉射/一騎討/退却四战术、`Hkumi.gp`/`Hikback.gp` 一騎討特写、夺城与势力转移、
   天下統一结局 CG（`Mainevt.gp`）。
+- 势力 AI（子任务 7）：`終了` 后所有非玩家势力自动内政 + 战略出阵；AI 互相攻伐由
+  `kassen_auto_resolve()` 自动结算（`〇〇軍が××城を攻略！`），AI 进攻玩家则切入
+  **守城战**（玩家守方，突撃/斉射/一騎討/籠城）。
+- 历史事件（子任务 7）：按年月或落城触发 `Mainevt.gp` CG + `Message.gp` 台词叠加层。
 
 ### 三、尚未实现 / TODO ⛔
 
 | 领域 | 现状 |
 |---|---|
 | **事件循环/输入** | ✅ 已抽出统一输入层 `src/input.c`（`input_poll(InputState*)`）：抽象键盘 `YphzKey` + 鼠标（逻辑坐标/位移/左右键边沿）；地图支持点击选城、拖拽/边缘/键盘卷动。仍未实现文本输入、手柄、快捷键重映射 |
-| **游戏逻辑** | ✅ 回合/月份推进与内政（开发/征兵/征税/换月）、城内武将移動、出陣与夺城已完成；仍无外交、势力 AI 与跨城行军路线 |
-| **合战系统** | ✅ 基础闭环已完成：战场背景、双方立绘与兵力/士気/城防、突撃/斉射/一騎討/退却、一騎討特写、夺城/势力转移、天下統一结局；仍无部队编成、战术地图与合战 AI |
-| **势力 AI** | 未实现 |
+| **游戏逻辑** | ✅ 回合/月份推进与内政（开发/征兵/征税/换月）、城内武将移動、出陣与夺城、**非玩家势力 AI（内政 + 战略出阵）** 已完成；仍无外交与跨城行军路线 |
+| **合战系统** | ✅ 基础闭环已完成：战场背景、双方立绘与兵力/士気/城防、突撃/斉射/一騎討/退却、一騎討特写、夺城/势力转移、天下統一结局；**AI 攻方自动出招、玩家守城战、AI vs AI 自动推演** 已完成；仍无部队编成与战术地图 |
+| **势力 AI** | ✅ 已完成：每月按势力执行内政（徴兵/徴税/開発）与战略出阵（兵力优势判定 + 概率出兵），确定性随机可复现 |
+| **历史事件** | ✅ 年月表（1180/9～1185/3 六个源平合战节点）与落城事件（平泉/屋島）触发 `Mainevt.gp` CG + `Message.gp` 台词；`Mainevt.gp` 事件脚本引擎仍未逆向 |
 | **存档** | `Savedata.gp` 未解析/未写入 |
 | **音频** | **完全未实现**：`Music.gp`/`Opmusic.gp`/`Edmusic.gp` 未解析，FM 驱动 `Fmdrv.com` 未逆向，无 MIDI/音效 |
 | **游戏内文本** | ✅ C 引擎已加载 `Message.gp`（LS11，5 条 / 2350 句）并在底部弹框显示；`Mainevt.gp` 事件脚本逻辑仍未逆向 |
 | **未解析的数据文件** | `Maincmd.gp`、`Mainobj.gp`、`Kisetsu.gp`、`Montage.gp`、`Opendat.gp`、`Enddat.gp`、`Disk-*.gp` 等裸格式未解压；`Mainitem.gp` 已可画廊预览但未接入数值系统 |
 | **未逆向的程序** | `Main.exe`/`Genpei.com`/`Open.exe`/`End.exe` 的主循环、菜单、合战逻辑 |
 
-### 四、2200G 上的子任务（1–6 已完成）
+### 四、2200G 上的子任务（1–7 已完成）
 
 > 说明：当前全部渲染为软件 blit（640x400），2200G（Ryzen 3 2200G + Vega 8）完全
 > 够用；以下均不涉及重 GPU/着色器开发，先打通**逻辑层**。
@@ -705,5 +769,42 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
     兵力 220→147、目标城 200→273；`560,179@1` 同链路 → 出陣 30→27 并进入合战；
   - `--unified`：39 城全部划归势力 0，显示 `Mainevt.gp` block 4 + 「天下統一」结局。
 
+**子任务 7 — 非玩家势力 AI + 玩家守城战 + 历史事件 CG — ✅ 已完成**
+- `include/turn.h` / `src/turn.c`：把内政执行抽出为按势力参数化的
+  `run_domestic_command()`，新增 `turn_run_faction_command()`（仅開発/徴兵/徴税）、
+  `turn_find_idle_officer_faction()`、`turn_find_attack_officer_faction()`；
+  原有玩家接口改为对 `player_faction` 的薄封装。
+- 新增 `include/kassen.h` / `src/kassen.c` 扩展：
+  - `KASSEN_CMD_HOLD`（籠城，守方第五战术）与 `KassenState.player_defends`；
+  - `kassen_begin_defense()`、`kassen_ai_attack_decide()`、`kassen_ai_defend_decide()`、
+    `kassen_defense_round()`（AI 攻方先出招、玩家守方后应招）、
+    `kassen_auto_resolve()`（AI vs AI ≤40 回合自动推演并结算夺城）。
+- 新增 `include/ai.h` / `src/ai.c`：`ai_run_turn()` 在玩家 `終了` 后驱动全部非玩家势力：
+  - **内政**：每城至多 2 次，兵力不足上限 3/4 且金糧足 → 徴兵；金 < 800 → 徴税；否则 開発；
+  - **战略出阵**：兵力 > 400 且存在兵力差 > 180 的相邻敌城时按 40% 概率出兵；
+  - 攻 AI 城 → `kassen_auto_resolve()`（成功打印 `faction=N CAPTURED castle=.. (from ..)`）；
+    攻玩家城 → 压入 `pending[]`（≤8），主循环顺序切入守城战；
+  - 随机数由 `(year, month, faction)` 确定性播种，`--ai-step` 输出可逐字节复现。
+- 新增 `include/event.h` / `src/event.c`：历史事件表 `event_match_date()` /
+  `event_match_castle_fall()` —— 1180/9 源氏挙兵、1180/10 富士川、1183/5 倶利伽羅峠、
+  1184/2 一ノ谷、1185/2 屋島、1185/3 壇ノ浦，以及平泉（38）/屋島（6）落城事件；
+  触发后叠加 `Mainevt.gp` 对应块 CG + 按关键词检索的 `Message.gp` 台词。
+- `src/main.c` 集成：
+  - `終了` → `turn_end` → `ai_run_turn` → 结算框（含 AI 诸势力动静静摘要）→ 事件 CG →
+    依次进入 `pending[]` 守城战（模态顺序：结算框 → 事件 → 守城战）；
+  - 合战界面守方按钮组切换为 **突撃/斉射/一騎討/籠城**，战果标题按攻守视角反转；
+  - `--battle-plan` 新增 `hold`，且计划索引改为**相对合战起始帧**（队列守城战亦对齐）；
+  - `--click` 新增右键注入（`r x,y[@frame]`），可无头关闭结算框以串联整条链路。
+- 新增 CLI：`--ai-step`、`--trigger-event <0..12>`（`--screenshot` 抓事件 CG）、
+  `--defend <from,to>`（AI 攻玩家城的守城战）。
+- 验收（`SDL_VIDEODRIVER=dummy`，零警告）：
+  - `--ai-step`：`1180/10` 全势力内政 62 次、出阵 5 次、落城 4 座、1 次扑向玩家城，
+    确定性可复现；
+  - `--defend 29,30 --battle-plan hold,volley,volley,charge`：AI 29→玩家 30 守城战，
+    攻方 150 vs 守军 220；`charge/volley` 可击退、`duel` 会失守，双结局可达；
+  - `--trigger-event 2`：`Mainevt.gp` block 2（160×128 倶利伽羅峠）渲染成功；
+  - 端到端 `--click '560,231@1;r300,300@3'`：`終了` → AI → 结算框 → 右键关闭 →
+    历史事件 →（自动过场）→ 守城战，全链路 `[AI]`/`[EVENT]`/`[KASSEN]` 日志连贯。
+
 补充（非本期）：**音频**（先逆向 `Fmdrv.com` + `Music.gp` 的 FM 音源格式）、
-**存档**（`Savedata.gp`）、**势力 AI / 战略行军**与**事件脚本**（`Mainevt.gp`）仍属后续方向。
+**存档**（`Savedata.gp`）与**战略行军路线**（跨城出兵）仍属后续方向。

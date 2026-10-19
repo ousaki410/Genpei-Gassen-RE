@@ -31,11 +31,13 @@ typedef enum {
     KASSEN_CMD_CHARGE,   // 突撃 : all-out charge, heavy losses on both sides
     KASSEN_CMD_VOLLEY,   // 斉射 : ranged volley, safer for the attacker
     KASSEN_CMD_DUEL,     // 一騎討 : single combat, big morale swing
-    KASSEN_CMD_RETREAT   // 退却 : withdraw the army
+    KASSEN_CMD_RETREAT,  // 退却 : withdraw the army
+    KASSEN_CMD_HOLD      // 籠城 : (defence only) hold the walls, weather the assault
 } KassenCommand;
 
 typedef struct {
     bool     active;
+    bool     player_defends;   // the human commands the garrison (AI attacks)
     bool     finished;
     bool     victory;          // attacker took the castle
     bool     retreated;        // attacker withdrew voluntarily
@@ -76,8 +78,26 @@ int kassen_list_targets(const Scenario *sc, int from_castle, int faction_id,
 void kassen_begin(KassenState *ks, Scenario *sc, int from_castle, int to_castle,
                   int attacker_officer);
 
+// Same, but marks the battle as a defensive one: the human commands the
+// garrison of `to_castle` while the AI drives the attackers from `from_castle`.
+void kassen_begin_defense(KassenState *ks, Scenario *sc, int from_castle,
+                          int to_castle, int attacker_officer);
+
 // Resolve one tactical command.  Returns true while the battle continues.
 bool kassen_command(KassenState *ks, Scenario *sc, KassenCommand cmd);
+
+// Deterministic AI heuristics (no RNG outside KassenState::rng).
+KassenCommand kassen_ai_attack_decide(const KassenState *ks, const Scenario *sc);
+KassenCommand kassen_ai_defend_decide(const KassenState *ks, const Scenario *sc);
+
+// One defensive exchange: the AI attacker commits a tactic, then the human's
+// defensive command resolves.  Returns true while the battle continues.
+bool kassen_defense_round(KassenState *ks, Scenario *sc, KassenCommand def_cmd);
+
+// Headless auto-resolve of an AI-vs-AI siege.  Applies the outcome to `sc`
+// and returns true when the attacker captured the castle.  `out` is optional.
+bool kassen_auto_resolve(Scenario *sc, int from_castle, int to_castle,
+                         int attacker_officer, KassenState *out);
 
 // Apply the finished battle to the scenario: transfer the castle on victory,
 // return survivors on defeat/retreat.  Safe to call only once per battle.
@@ -88,5 +108,6 @@ bool kassen_is_unified(const Scenario *sc);
 
 const char *kassen_command_name(KassenCommand cmd);   // SJIS label
 const char *kassen_command_ascii(KassenCommand cmd);  // headless log label
+const char *kassen_defense_name(KassenCommand cmd);   // SJIS label (defence set)
 
 #endif // YPHZ_KASSEN_H

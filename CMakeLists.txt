@@ -140,6 +140,8 @@ add_executable(yphz_engine
     src/scenario.c
     src/turn.c
     src/kassen.c
+    src/ai.c
+    src/event.c
     src/npk.c)
 
 target_include_directories(yphz_engine PRIVATE

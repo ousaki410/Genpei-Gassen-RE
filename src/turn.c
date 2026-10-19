@@ -69,14 +69,15 @@ static bool officer_serves_at(const ScenarioOfficer *o, int faction_id, int cast
     return o->is_active && o->faction_id == faction_id && o->castle_id == castle_id;
 }
 
-int turn_find_idle_officer(const Scenario *sc, const TurnState *ts, int castle_id) {
+int turn_find_idle_officer_faction(const Scenario *sc, const TurnState *ts,
+                                   int faction_id, int castle_id) {
     if (!sc || !ts || castle_id < 0 || castle_id >= sc->num_castles) return -1;
 
     // The castle lord gets first crack at domestic affairs, then by officer id.
     int lord = sc->castles[castle_id].lord_officer_id;
     if (lord >= 0 && lord < sc->num_officers) {
         const ScenarioOfficer *o = &sc->officers[lord];
-        if (officer_serves_at(o, ts->player_faction, castle_id) &&
+        if (officer_serves_at(o, faction_id, castle_id) &&
             !turn_officer_has_acted(ts, lord)) {
             return lord;
         }
@@ -84,12 +85,17 @@ int turn_find_idle_officer(const Scenario *sc, const TurnState *ts, int castle_i
 
     for (int i = 0; i < sc->num_officers; i++) {
         const ScenarioOfficer *o = &sc->officers[i];
-        if (officer_serves_at(o, ts->player_faction, castle_id) &&
+        if (officer_serves_at(o, faction_id, castle_id) &&
             !turn_officer_has_acted(ts, i)) {
             return i;
         }
     }
     return -1;
+}
+
+int turn_find_idle_officer(const Scenario *sc, const TurnState *ts, int castle_id) {
+    return turn_find_idle_officer_faction(sc, ts, ts ? ts->player_faction : 0,
+                                          castle_id);
 }
 
 int turn_list_castle_officers(const Scenario *sc, int faction_id, int castle_id,
@@ -119,15 +125,15 @@ int turn_list_move_targets(const Scenario *sc, int from_castle, int faction_id,
     return n;
 }
 
-int turn_find_attack_officer(const Scenario *sc, const TurnState *ts,
-                             int castle_id) {
+int turn_find_attack_officer_faction(const Scenario *sc, const TurnState *ts,
+                                     int faction_id, int castle_id) {
     if (!sc || !ts || castle_id < 0 || castle_id >= sc->num_castles) return -1;
 
     int best = -1;
     int best_war = -1;
     for (int i = 0; i < sc->num_officers; i++) {
         const ScenarioOfficer *o = &sc->officers[i];
-        if (!officer_serves_at(o, ts->player_faction, castle_id)) continue;
+        if (!officer_serves_at(o, faction_id, castle_id)) continue;
         if (turn_officer_has_acted(ts, i)) continue;
         if (o->war > best_war) {
             best_war = o->war;
@@ -139,10 +145,16 @@ int turn_find_attack_officer(const Scenario *sc, const TurnState *ts,
     // Fall back to the lord even if flagged as acted (headless convenience).
     int lord = sc->castles[castle_id].lord_officer_id;
     if (lord >= 0 && lord < sc->num_officers &&
-        officer_serves_at(&sc->officers[lord], ts->player_faction, castle_id)) {
+        officer_serves_at(&sc->officers[lord], faction_id, castle_id)) {
         return lord;
     }
     return -1;
+}
+
+int turn_find_attack_officer(const Scenario *sc, const TurnState *ts,
+                             int castle_id) {
+    return turn_find_attack_officer_faction(sc, ts, ts ? ts->player_faction : 0,
+                                            castle_id);
 }
 
 bool turn_move_officer(TurnState *ts, Scenario *sc, int from_castle, int to_castle,
@@ -296,6 +308,10 @@ bool turn_end(TurnState *ts, Scenario *sc, TurnResult *res) {
     return true;
 }
 
+static bool run_domestic_command(TurnState *ts, Scenario *sc, int faction_id,
+                                 int castle_id, TurnCommand cmd, int officer_id,
+                                 TurnResult *res);
+
 bool turn_run_command(TurnState *ts, Scenario *sc, int castle_id,
                       TurnCommand cmd, TurnResult *res) {
     return turn_run_command_officer(ts, sc, castle_id, cmd, -1, res);
@@ -330,10 +346,48 @@ bool turn_run_command_officer(TurnState *ts, Scenario *sc, int castle_id,
         return true;
     }
 
+    return run_domestic_command(ts, sc, ts->player_faction, castle_id,
+                                cmd, officer_id, res);
+}
+
+// Domestic command for an arbitrary faction (non-player AI). Rejects the
+// player-only UI/military commands so the AI can never end the turn itself.
+bool turn_run_faction_command(TurnState *ts, Scenario *sc, int faction_id,
+                              int castle_id, TurnCommand cmd, int officer_id,
+                              TurnResult *res) {
+    if (!ts || !sc || !res) return false;
+
+    memset(res, 0, sizeof(*res));
+    res->cmd = cmd;
+    res->castle_id = castle_id;
+    res->officer_id = -1;
+
+    if (castle_id < 0 || castle_id >= sc->num_castles) {
+        snprintf(res->text, sizeof(res->text), SJIS_NO_OFF);
+        return false;
+    }
+    if (cmd != TURN_CMD_DEVELOP && cmd != TURN_CMD_RECRUIT && cmd != TURN_CMD_TAX) {
+        snprintf(res->text, sizeof(res->text), SJIS_LORD_ONLY);
+        return false;
+    }
+    if (sc->castles[castle_id].faction_id != faction_id) {
+        snprintf(res->text, sizeof(res->text), SJIS_LORD_ONLY);
+        return false;
+    }
+
+    return run_domestic_command(ts, sc, faction_id, castle_id, cmd, officer_id, res);
+}
+
+// Shared DEVELOP / RECRUIT / TAX executor (used by the player and the AI).
+static bool run_domestic_command(TurnState *ts, Scenario *sc, int faction_id,
+                                 int castle_id, TurnCommand cmd, int officer_id,
+                                 TurnResult *res) {
+    ScenarioCastle *cs = &sc->castles[castle_id];
+
     int oid;
     if (officer_id >= 0) {
         if (officer_id >= sc->num_officers ||
-            !officer_serves_at(&sc->officers[officer_id], ts->player_faction, castle_id)) {
+            !officer_serves_at(&sc->officers[officer_id], faction_id, castle_id)) {
             snprintf(res->text, sizeof(res->text), SJIS_NO_OFF);
             return false;
         }
@@ -345,7 +399,7 @@ bool turn_run_command_officer(TurnState *ts, Scenario *sc, int castle_id,
         }
         oid = officer_id;
     } else {
-        oid = turn_find_idle_officer(sc, ts, castle_id);
+        oid = turn_find_idle_officer_faction(sc, ts, faction_id, castle_id);
         if (oid < 0) {
             snprintf(res->text, sizeof(res->text), SJIS_NO_OFF "\n" SJIS_ALL_ACTED);
             return false;

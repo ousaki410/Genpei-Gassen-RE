@@ -12,6 +12,7 @@
 #define SJIS_VOLLEY   "\x90\xc4\x8e\xcb"                    // 斉射
 #define SJIS_DUEL     "\x88\xea\x8b\x52\x93\xa2"            // 一騎討
 #define SJIS_RETREAT  "\x91\xde\x8b\x70"                    // 退却
+#define SJIS_HOLD     "\xe2\xc4\x8f\xe9"                    // 籠城
 #define SJIS_VICTORY  "\x8f\x9f\x97\x98"                    // 勝利
 #define SJIS_DEFEAT   "\x94\x73\x96\x6b"                    // 敗北
 #define SJIS_UNIFIED  "\x93\x56\x89\xba\x93\x9d\x88\xea"    // 天下統一
@@ -29,6 +30,18 @@ const char *kassen_command_name(KassenCommand cmd) {
         case KASSEN_CMD_VOLLEY:  return SJIS_VOLLEY;
         case KASSEN_CMD_DUEL:    return SJIS_DUEL;
         case KASSEN_CMD_RETREAT: return SJIS_RETREAT;
+        case KASSEN_CMD_HOLD:    return SJIS_HOLD;
+        default:                 return "";
+    }
+}
+
+// The defensive command set swaps 退却 for 籠城 (the garrison cannot withdraw).
+const char *kassen_defense_name(KassenCommand cmd) {
+    switch (cmd) {
+        case KASSEN_CMD_CHARGE:  return SJIS_CHARGE;
+        case KASSEN_CMD_VOLLEY:  return SJIS_VOLLEY;
+        case KASSEN_CMD_DUEL:    return SJIS_DUEL;
+        case KASSEN_CMD_HOLD:    return SJIS_HOLD;
         default:                 return "";
     }
 }
@@ -39,6 +52,7 @@ const char *kassen_command_ascii(KassenCommand cmd) {
         case KASSEN_CMD_VOLLEY:  return "VOLLEY";
         case KASSEN_CMD_DUEL:    return "DUEL";
         case KASSEN_CMD_RETREAT: return "RETREAT";
+        case KASSEN_CMD_HOLD:    return "HOLD";
         default:                 return "NONE";
     }
 }
@@ -181,6 +195,12 @@ void kassen_begin(KassenState *ks, Scenario *sc, int from_castle, int to_castle,
     push_log(ks, SJIS_TROOPS " %d  :  %d", ks->att_troops, ks->def_troops);
 }
 
+void kassen_begin_defense(KassenState *ks, Scenario *sc, int from_castle,
+                          int to_castle, int attacker_officer) {
+    kassen_begin(ks, sc, from_castle, to_castle, attacker_officer);
+    if (ks) ks->player_defends = true;
+}
+
 static void check_finished(KassenState *ks) {
     if (ks->def_troops <= 0 || ks->defense <= 0) {
         ks->finished = true;
@@ -295,6 +315,144 @@ bool kassen_command(KassenState *ks, Scenario *sc, KassenCommand cmd) {
     return !ks->finished;
 }
 
+// ---------------------------------------------------------------------------
+// AI heuristics + defensive battles
+// ---------------------------------------------------------------------------
+
+KassenCommand kassen_ai_attack_decide(const KassenState *ks, const Scenario *sc) {
+    (void)sc;
+    if (!ks) return KASSEN_CMD_CHARGE;
+    if (ks->att_troops <= 40) return KASSEN_CMD_RETREAT;
+    // Well-fortified walls favour a ranged approach; a weak defence invites a
+    // decisive charge.  The pattern is deterministic in (turn, castle ids).
+    int r = (ks->turn * 7 + ks->from_castle * 3 + ks->to_castle) % 10;
+    if (ks->defense > 350 || ks->att_troops < ks->def_troops) {
+        return (r < 7) ? KASSEN_CMD_VOLLEY : KASSEN_CMD_CHARGE;
+    }
+    if (r < 5) return KASSEN_CMD_CHARGE;
+    if (r < 8) return KASSEN_CMD_VOLLEY;
+    return KASSEN_CMD_DUEL;
+}
+
+KassenCommand kassen_ai_defend_decide(const KassenState *ks, const Scenario *sc) {
+    (void)sc;
+    if (!ks) return KASSEN_CMD_HOLD;
+    if (ks->defense < 160 && ks->def_troops > ks->att_troops) {
+        return KASSEN_CMD_CHARGE;   // sortie while we still outnumber them
+    }
+    int r = (ks->turn * 5 + ks->to_castle) % 10;
+    if (r < 5) return KASSEN_CMD_VOLLEY;
+    if (r < 7) return KASSEN_CMD_DUEL;
+    return KASSEN_CMD_HOLD;
+}
+
+// Resolve the defending side's chosen tactic (the attacker already acted).
+static void kassen_defender_action(KassenState *ks, Scenario *sc,
+                                   KassenCommand cmd) {
+    if (!ks || !sc || ks->finished) return;
+    if (cmd != KASSEN_CMD_CHARGE && cmd != KASSEN_CMD_VOLLEY &&
+        cmd != KASSEN_CMD_DUEL && cmd != KASSEN_CMD_HOLD) {
+        cmd = KASSEN_CMD_HOLD;
+    }
+
+    const ScenarioOfficer *a = (ks->attacker_officer >= 0)
+                                   ? &sc->officers[ks->attacker_officer] : NULL;
+    const ScenarioOfficer *d = (ks->defender_officer >= 0)
+                                   ? &sc->officers[ks->defender_officer] : NULL;
+    int a_war = a ? a->war : 40;
+    int a_lead = a ? a->lead : 40;
+    int d_war = d ? d->war : 40;
+    int d_lead = d ? d->lead : 40;
+    int d_intel = d ? d->intel : 40;
+
+    int def_power = d_lead + d_war + ks->defense / 12 + ks->def_morale / 8 +
+                    ks->def_troops / 100;
+    int att_power = a_lead + a_war + ks->att_morale / 8 + ks->att_troops / 100;
+
+    uint32_t r = kassen_rand(ks);
+    int att_loss = 0;
+    int def_loss = 0;
+    ks->duel_active = false;
+    ks->duel_winner = -1;
+
+    switch (cmd) {
+        case KASSEN_CMD_HOLD:
+            ks->defense += 6;
+            ks->def_morale += 5;
+            clamp_morale(&ks->def_morale);
+            push_log(ks, SJIS_HOLD "  " SJIS_DEFEND " +6");
+            break;
+
+        case KASSEN_CMD_CHARGE:
+            att_loss = 45 + def_power / 3 + (int)(r % 25);
+            def_loss = 15 + att_power / 5 + (int)((r >> 8) % 15);
+            ks->att_morale -= 4;
+            push_log(ks, SJIS_CHARGE "  " SJIS_ATTACK " -%d  " SJIS_DEFEND " -%d",
+                     att_loss, def_loss);
+            break;
+
+        case KASSEN_CMD_VOLLEY:
+            att_loss = 25 + def_power / 4 + d_intel / 2 + (int)(r % 20);
+            def_loss = 6 + att_power / 8 + (int)((r >> 8) % 10);
+            ks->att_morale -= 3;
+            push_log(ks, SJIS_VOLLEY "  " SJIS_ATTACK " -%d  " SJIS_DEFEND " -%d",
+                     att_loss, def_loss);
+            break;
+
+        case KASSEN_CMD_DUEL: {
+            int a_roll = a_war * 3 + (int)(r % 50);
+            int d_roll = d_war * 3 + (int)((r >> 8) % 50);
+            ks->duel_active = true;
+            ks->duel_bg = ((ks->turn + 1) & 1);
+            if (d_roll >= a_roll) {
+                ks->duel_winner = 1;
+                att_loss = 70 + d_war + (int)((r >> 16) % 40);
+                def_loss = 20 + a_war / 2;
+                ks->def_morale += 18;
+                ks->att_morale -= 22;
+                push_log(ks, SJIS_DUEL "  " SJIS_DEFEND " " SJIS_VICTORY);
+            } else {
+                ks->duel_winner = 0;
+                def_loss = 70 + a_war + (int)((r >> 16) % 40);
+                att_loss = 20 + d_war / 2;
+                ks->att_morale += 18;
+                ks->def_morale -= 22;
+                push_log(ks, SJIS_DUEL "  " SJIS_ATTACK " " SJIS_VICTORY);
+            }
+            break;
+        }
+
+        default:
+            return;
+    }
+
+    if (att_loss > ks->att_troops) att_loss = ks->att_troops;
+    if (def_loss > ks->def_troops) def_loss = ks->def_troops;
+    if (att_loss < 0) att_loss = 0;
+    if (def_loss < 0) def_loss = 0;
+
+    ks->last_att_loss = att_loss;
+    ks->last_def_loss = def_loss;
+    ks->att_troops -= att_loss;
+    ks->def_troops -= def_loss;
+    clamp_morale(&ks->att_morale);
+    clamp_morale(&ks->def_morale);
+    check_finished(ks);
+}
+
+bool kassen_defense_round(KassenState *ks, Scenario *sc, KassenCommand def_cmd) {
+    if (!ks || !sc || !ks->active || ks->finished) return false;
+
+    // 1. The AI attacker commits a tactic (this also advances the turn).
+    KassenCommand ai = kassen_ai_attack_decide(ks, sc);
+    kassen_command(ks, sc, ai);
+    if (ks->finished) return false;
+
+    // 2. The human answers with a defensive command.
+    kassen_defender_action(ks, sc, def_cmd);
+    return !ks->finished;
+}
+
 void kassen_apply_result(KassenState *ks, Scenario *sc) {
     if (!ks || !sc || !ks->active || !ks->finished) return;
 
@@ -370,6 +528,26 @@ void kassen_apply_result(KassenState *ks, Scenario *sc) {
     }
 
     ks->active = false;
+}
+
+bool kassen_auto_resolve(Scenario *sc, int from_castle, int to_castle,
+                         int attacker_officer, KassenState *out) {
+    if (!sc) return false;
+
+    KassenState ks;
+    kassen_begin(&ks, sc, from_castle, to_castle, attacker_officer);
+
+    int guard = 0;
+    while (!ks.finished && guard++ < 40) {
+        KassenCommand ai = kassen_ai_attack_decide(&ks, sc);
+        kassen_command(&ks, sc, ai);
+        if (ks.finished) break;
+        kassen_defender_action(&ks, sc, kassen_ai_defend_decide(&ks, sc));
+    }
+
+    kassen_apply_result(&ks, sc);
+    if (out) *out = ks;
+    return ks.victory;
 }
 
 bool kassen_is_unified(const Scenario *sc) {

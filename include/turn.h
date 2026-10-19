@@ -64,6 +64,10 @@ bool turn_officer_has_acted(const TurnState *ts, int officer_id);
 // (the castle lord is preferred). Returns -1 when everyone has acted.
 int turn_find_idle_officer(const Scenario *sc, const TurnState *ts, int castle_id);
 
+// Same, for an explicit faction (used by the non-player AI).
+int turn_find_idle_officer_faction(const Scenario *sc, const TurnState *ts,
+                                   int faction_id, int castle_id);
+
 // Enumerate the active officers of `faction_id` stationed at `castle_id`.
 // Returns the number written to ids (up to max_ids), ordered by officer id.
 int turn_list_castle_officers(const Scenario *sc, int faction_id, int castle_id,
@@ -76,6 +80,10 @@ int turn_list_move_targets(const Scenario *sc, int from_castle, int faction_id,
 // Highest-war idle officer at `castle_id` (for 出陣), -1 when none is free.
 int turn_find_attack_officer(const Scenario *sc, const TurnState *ts,
                              int castle_id);
+
+// Same, for an explicit faction (used by the non-player AI).
+int turn_find_attack_officer_faction(const Scenario *sc, const TurnState *ts,
+                                     int faction_id, int castle_id);
 
 // Transfer `officer_id` plus part of the garrison from `from_castle` to a
 // connected friendly castle. Consumes the officer's action.
@@ -98,6 +106,13 @@ bool turn_run_command(TurnState *ts, Scenario *sc, int castle_id,
 // officer). Used by the roster-driven "choose an officer" UI flow.
 bool turn_run_command_officer(TurnState *ts, Scenario *sc, int castle_id,
                               TurnCommand cmd, int officer_id, TurnResult *res);
+
+// Faction-parameterised domestic command used by the non-player AI. Accepts
+// DEVELOP / RECRUIT / TAX for any faction (not just the player) and marks the
+// acting officer as spent. END / MOVE / ATTACK are rejected here.
+bool turn_run_faction_command(TurnState *ts, Scenario *sc, int faction_id,
+                              int castle_id, TurnCommand cmd, int officer_id,
+                              TurnResult *res);
 
 // End-of-month settlement: month++ (with year rollover), per-castle income,
 // quarterly harvest growth, and action reset. Also used via TURN_CMD_END.
