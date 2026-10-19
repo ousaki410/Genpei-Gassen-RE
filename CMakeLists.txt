@@ -145,6 +145,7 @@ add_executable(yphz_engine
     src/save.c
     src/opening.c
     src/npk.c
+    src/dos_save.c
     src/treasure.c)
 
 target_include_directories(yphz_engine PRIVATE

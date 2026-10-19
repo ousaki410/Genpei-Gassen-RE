@@ -17,6 +17,7 @@
 #include "npk.h"
 #include "scenario.h"
 #include "treasure.h"
+#include "dos_save.h"
 
 static char s_asset_dir[256] = "games/yphz";
 
@@ -1287,6 +1288,15 @@ int main(int argc, char *argv[]) {
     int  treasure_sel = 0;
     char treasure_msg[128] = {0};
 
+    // 子任务 10: original DOS Savedata.gp slots.
+    int  dos_import_slot = -1;                 // --import-dos-save <0..9>
+    int  dos_export_slot = -1;                 // --export-dos-save <0..9>
+    const char *dos_save_path = NULL;          // --dos-save-path <file>
+    DosSaveInfo dos_info;
+    memset(&dos_info, 0, sizeof(dos_info));
+    dos_info.scenario_idx = -1;
+    bool dos_imported = false;
+
     // Headless mouse-click injection: --click x,y[@frame], repeatable / ';'-list.
     ClickEvent clicks[MAX_CLICKS];
     int click_count = 0;
@@ -1482,6 +1492,16 @@ int main(int argc, char *argv[]) {
             grant_item = atoi(argv[++i]);
             if (grant_item < 0) grant_item = 0;
             if (grant_item >= TREASURE_COUNT) grant_item = TREASURE_COUNT - 1;
+        } else if (strcmp(argv[i], "--import-dos-save") == 0 && i + 1 < argc) {
+            dos_import_slot = atoi(argv[++i]);
+            if (dos_import_slot < 0) dos_import_slot = 0;
+            if (dos_import_slot >= DOS_SLOT_COUNT) dos_import_slot = DOS_SLOT_COUNT - 1;
+        } else if (strcmp(argv[i], "--export-dos-save") == 0 && i + 1 < argc) {
+            dos_export_slot = atoi(argv[++i]);
+            if (dos_export_slot < 0) dos_export_slot = 0;
+            if (dos_export_slot >= DOS_SLOT_COUNT) dos_export_slot = DOS_SLOT_COUNT - 1;
+        } else if (strcmp(argv[i], "--dos-save-path") == 0 && i + 1 < argc) {
+            dos_save_path = argv[++i];
         } else if (strcmp(argv[i], "--preview-npk") == 0 && i + 2 < argc) {
             preview_npk_name = argv[++i];
             preview_npk_index = atoi(argv[++i]);
@@ -1493,6 +1513,14 @@ int main(int argc, char *argv[]) {
             gallery_mode = true;
             gallery_loaded_pack = -1;
         }
+    }
+
+    // 子任务 10: resolve the DOS Savedata.gp path (defaults to the asset dir).
+    char dos_path[512];
+    if (dos_save_path) {
+        snprintf(dos_path, sizeof(dos_path), "%s", dos_save_path);
+    } else {
+        snprintf(dos_path, sizeof(dos_path), "%s/Savedata.gp", s_asset_dir);
     }
 
     // --select-castle renders the strategic map with the chosen castle selected
@@ -1538,6 +1566,16 @@ int main(int argc, char *argv[]) {
         show_castle_card = false;
         show_cmd_menu = false;
     }
+    if (dos_import_slot >= 0) {
+        start_map_mode = true;
+        show_castle_card = true;
+        show_cmd_menu = false;
+    }
+    if (dos_export_slot >= 0 && dos_import_slot < 0) {
+        start_map_mode = true;
+        show_castle_card = false;
+        show_cmd_menu = false;
+    }
 
     // 子任务 8: the opening flow (Logo.gp title -> scenario -> daimyo -> map)
     // only runs for a plain launch. Every "jump" argument keeps the original
@@ -1548,6 +1586,7 @@ int main(int argc, char *argv[]) {
                     preview_npk_name != NULL || gallery_mode || unified_debug ||
                     load_path != NULL || save_path != NULL || dump_state ||
                     show_roads || item_show >= 0 || grant_item >= 0 ||
+                    dos_import_slot >= 0 || dos_export_slot >= 0 ||
                     scenario_given || castle_given || officer_given ||
                     faction_override >= 0;
     bool opening_mode = !cli_jump;
@@ -1650,9 +1689,36 @@ int main(int argc, char *argv[]) {
     // 7. Load Scenario Subsystem (Sndata.gp)
     char snd_path[512];
     snprintf(snd_path, sizeof(snd_path), "%s/Sndata.gp", s_asset_dir);
+
+    // 子任务 10: the DOS slot summary carries its own scenario id and date, so
+    // it must be probed *before* Sndata is loaded with a scenario index.
+    if (dos_import_slot >= 0) {
+        if (dos_save_read_info(dos_path, dos_import_slot, snd_path, &dos_info)) {
+            printf("[DOS] slot=%d used=%d date=%d/%d scenario=%d\n",
+                   dos_import_slot, dos_info.used ? 1 : 0, dos_info.year,
+                   dos_info.month, dos_info.scenario_idx);
+            if (dos_info.used && dos_info.scenario_idx >= 0) {
+                cur_scenario = dos_info.scenario_idx;
+            } else if (!dos_info.used) {
+                fprintf(stderr, "[WARN] DOS slot %d is an empty template\n",
+                        dos_import_slot);
+            }
+        } else {
+            fprintf(stderr, "[ERROR] --import-dos-save failed: %s slot %d\n",
+                    dos_path, dos_import_slot);
+        }
+    }
+
     Scenario g_scenario = {0};
     if (!scenario_load(snd_path, cur_scenario, &g_scenario)) {
         scenario_load("Sndata.gp", cur_scenario, &g_scenario);
+    }
+
+    if (dos_import_slot >= 0 && dos_info.used && dos_info.scenario_idx >= 0) {
+        if (dos_save_apply(dos_path, dos_import_slot, &g_scenario, &dos_info)) {
+            dos_imported = true;
+            cur_scenario = g_scenario.scenario_idx;
+        }
     }
 
     // 8. Load Message.gp dialogue (LS11 text container)
@@ -1673,6 +1739,9 @@ int main(int argc, char *argv[]) {
     int player_faction;
     if (faction_override >= 0) {
         player_faction = faction_override;
+    } else if (dos_imported && dos_info.player_faction >= 0) {
+        // 子任务 10: the imported DOS slot's leader decides the player clan.
+        player_faction = dos_info.player_faction;
     } else if (attack_from >= 0 && attack_from < g_scenario.num_castles) {
         // --attack launches from the given castle's clan.
         player_faction = g_scenario.castles[attack_from].faction_id;
@@ -1688,6 +1757,18 @@ int main(int argc, char *argv[]) {
     }
     if (player_faction < 0) player_faction = 0;
     turn_init(&g_turn, &g_scenario, player_faction);
+
+    if (dos_imported) {
+        // Follow the imported leader, so the map opens on the saved daimyo.
+        if (dos_info.leader_officer >= 0 &&
+            dos_info.leader_officer < g_scenario.num_officers) {
+            cur_officer = dos_info.leader_officer;
+        }
+        if (dos_info.leader_castle >= 0 &&
+            dos_info.leader_castle < g_scenario.num_castles) {
+            cur_castle = dos_info.leader_castle;
+        }
+    }
 
     // 子任务 8: --load restores a snapshot before any headless commands run.
     if (load_path) {
@@ -3177,6 +3258,17 @@ int main(int argc, char *argv[]) {
         printf("[STATE] date=%d/%d faction=%d hash=0x%08x\n",
                g_turn.year, g_turn.month, g_turn.player_faction,
                save_state_hash(&g_scenario, &g_turn));
+    }
+
+    // 子任务 10: write the live state back into an original DOS slot.
+    if (dos_export_slot >= 0) {
+        if (dos_save_export(dos_path, dos_export_slot, snd_path, &g_scenario,
+                            &g_turn)) {
+            printf("[DOS] wrote slot %d to %s\n", dos_export_slot, dos_path);
+        } else {
+            fprintf(stderr, "[ERROR] --export-dos-save failed: slot %d\n",
+                    dos_export_slot);
+        }
     }
 
     free_decoded_image(&s_battle_duel);
