@@ -61,6 +61,7 @@ SDL_VIDEODRIVER=dummy ./bin/yphz_engine --frames 5 --screenshot /tmp/shot.bmp
 │   ├── ai.h                #   非玩家势力 AI（内政 + 战略出阵报告）
 │   ├── event.h             #   历史事件表（年月 / 落城 → Mainevt 块）
 │   ├── save.h              #   原生存档槽（Scenario + TurnState 快照）
+│   ├── opening.h           #   片头流程（Logo → シナリオ → 大名）
 │   └── sdl_compat.h        #   SDL2/SDL3 唯一引入点
 ├── src/                    # 引擎源码（C11）
 │   ├── main.c              #   入口：CLI、资源装载、双模式渲染主循环
@@ -73,6 +74,7 @@ SDL_VIDEODRIVER=dummy ./bin/yphz_engine --frames 5 --screenshot /tmp/shot.bmp
 │   ├── ai.c                #   全势力 AI 月度决策（内政 + 出阵 + 守城触发）
 │   ├── event.c             #   历史事件表（源平合战年表 + 落城触发）
 │   ├── save.c              #   原生存档槽读写 + 状态哈希
+│   ├── opening.c           #   片头/剧本/大名选择状态机与渲染
 │   ├── npk.c               #   NPK016 通用容器索引（按需解压单块）
 │   └── scenario.c          #   Sndata.gp 剧本解析 + 静态历史数据表
 ├── tools/                  # Python 逆向工具（Pillow）
@@ -250,6 +252,17 @@ SDL_VIDEODRIVER=dummy ./bin/yphz_engine --load /tmp/save2.sav --dump-state --fra
 
 # 原版 Savedata.gp 结构侦察（只读）
 python3 tools/probe_savedata.py
+
+# 子任务 8：片头流程（标题 → 剧本 → 大名 → 地图），--click 无头驱动
+SDL_VIDEODRIVER=dummy ./bin/yphz_engine \
+    --click '320,200@1;250,110@2;200,74@3' \
+    --frames 8 --shot-frame 7 --screenshot /tmp/opening_map.bmp
+# 标题 / 剧本 / 大名三屏截图
+SDL_VIDEODRIVER=dummy ./bin/yphz_engine --frames 2 --screenshot /tmp/title.bmp
+SDL_VIDEODRIVER=dummy ./bin/yphz_engine --click '320,200@1' --frames 3 \
+    --shot-frame 2 --screenshot /tmp/scenario.bmp
+SDL_VIDEODRIVER=dummy ./bin/yphz_engine --click '320,200@1;250,110@2' \
+    --frames 4 --shot-frame 3 --screenshot /tmp/daimyo.bmp
 ```
 
 ### 键盘操作
@@ -257,6 +270,9 @@ python3 tools/probe_savedata.py
 | 模式 | 按键 | 功能 |
 |---|---|---|
 | 通用 | `M` | 战略地图 ⇄ 武将立绘 切换 |
+| 片头 | 任意键 / 点击 | 标题画面 → 剧本选择 |
+| 剧本选择 | `1`–`4` / `↑↓` / `ENTER` / `ESC` | 直接选定剧本 / 移动 / 确认 / 返回标题 |
+| 大名选择 | `↑↓` / 数字 / `ENTER` / `ESC` | 选择势力 / 确认并开始 / 返回剧本选择 |
 | 通用 | `F5` | 保存到存档槽（默认 `Savedata.sav`，可用 `--save-slot` 指定） |
 | 通用 | `F9` | 从存档槽读取并恢复游戏状态 |
 | 通用 | `L` | 打开/关闭 NPK016 画廊（Logo / 事件 CG / 家宝 / 合战景等 8 个包） |
@@ -486,7 +502,7 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
 
 ### 一、源码文件职责与已实现功能
 
-**`src/main.c`（2615 行）— 入口与渲染主循环**
+**`src/main.c`（2769 行）— 入口与渲染主循环**
 - CLI 参数解析（见上表）+ `YPHZ_DATA_DIR` 环境变量。
 - 资源装载 `load_file()`：`Mainpal.pld`、`JIS.FNT`/`FONT.CHR`、`Main.exe`（读
   `0x4D3BB` 处 90 个立绘偏移表）、`Kaodata.gp`、`Hikback.gp`、`Maincmd2.gp`、
@@ -590,6 +606,19 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
 - 游戏内 `F5` 保存 / `F9` 读取（默认槽 `Savedata.sav`，可用 `--save-slot` 指定），
   并在底部对话框显示「保存/復元 完了/失敗」。
 
+**`src/opening.c`（424 行）+ `include/opening.h` — 片头流程（子任务 8）**
+- `OpeningState`：`OPENING_TITLE` → `OPENING_SCENARIO` → `OPENING_DAIMYO` 三屏状态机，
+  持有 `Logo.gp` 5 块图、当前剧本/高亮行、可玩势力表与当主 id、当主立绘缓存。
+- **标题**：`Logo.gp` 的 KOEI 标志（块 0）、「歴史シミュレーションゲーム」（块 2）、
+  「KOEI PRESENTS」（块 1）、「A KOU SHIBUSAWA PRODUCTION」（块 3）、版权（块 4），
+  中央以 SJIS 描出「源平合戦」；任意键/点击进入剧本选择。
+- **剧本选择**：4 个剧本（1180/9、1183/6、1184/9、1185/9）显示标题与年月，
+  `1-4` 直选、`↑↓` 移动、`ENTER` 确认、`ESC` 返回；确认后重新 `scenario_load()`。
+- **大名选择**：列出该剧本中占有城池的势力（最多 15），显示旗色、势力名、
+  当主姓名与 `Kaodata` 立绘；当主由 `scenario_faction_leader()`（势力最强城主）确定。
+  `↑↓`/数字移动、`ENTER`/点击确认 → `turn_init()` 并交回主循环进入地图。
+- `--click` 可完整驱动三屏（无头截图验证）；任何“跳转类” CLI 参数都会跳过片头。
+
 **`src/npk.c`（64 行）— NPK016 通用容器访问**
 - `npk_load()` 扫描文件中全部 `NPK016` magic 并记录块偏移；`npk_decode()` 按块
   调用 `nup4_decompress_block()`；`npk_free()` 释放容器。
@@ -648,7 +677,7 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
 `message.h`（`MessageFile`/`MessageEntry`）、`turn.h`（`TurnState`/`TurnCommand`/
 `TurnResult`）、`kassen.h`（`KassenState`/`KassenCommand`）、`ai.h`（`AiReport`/
 `AiPendingBattle`）、`event.h`（`HistoricalEvent`）、`save.h`（`save_game`/
-`load_game`）、`npk.h`（`NpkFile`）、
+`load_game`）、`opening.h`（`OpeningState`）、`npk.h`（`NpkFile`）、
 `sdl_compat.h`（SDL2/SDL3 引入切换）。
 所有结构体 `#pragma pack(push,1)`。
 
@@ -690,6 +719,8 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
 - 历史事件（子任务 7）：按年月或落城触发 `Mainevt.gp` CG + `Message.gp` 台词叠加层。
 - 存档/读档（子任务 8）：`F5`/`F9` 与 `--save`/`--load` 使用 63270 B 原生快照
   （`Scenario` + `TurnState`），`--dump-state` 哈希验证往返完全一致。
+- 片头流程（子任务 8）：`Logo.gp` 标题 → 4 剧本选择 → 15 势力大名选择（旗色 +
+  当主立绘）→ 地图；无跳转类 CLI 参数时自动进入。
 
 ### 三、尚未实现 / TODO ⛔
 
@@ -701,12 +732,13 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
 | **势力 AI** | ✅ 已完成：每月按势力执行内政（徴兵/徴税/開発）与战略出阵（兵力优势判定 + 概率出兵），确定性随机可复现 |
 | **历史事件** | ✅ 年月表（1180/9～1185/3 六个源平合战节点）与落城事件（平泉/屋島）触发 `Mainevt.gp` CG + `Message.gp` 台词；`Mainevt.gp` 事件脚本引擎仍未逆向 |
 | **存档** | ✅ `Savedata.gp` 结构已侦察（10 × 43403 B：年/月头 + 势力表 + 漂移的场景快照）；引擎改用自描述原生槽（`Scenario` + `TurnState`，63270 B），支持 `F5`/`F9` 与 `--save`/`--load`，往返状态哈希一致；写入原版 `Savedata.gp` 字节格式仍待完成 |
+| **片头/选势力** | ✅ `Logo.gp` 标题 → 4 剧本选择 → 15 势力大名选择（旗色 + 当主 `Kaodata` 立绘）→ 地图；无跳转类 CLI 参数时自动进入，所有既有 CLI 路径保持不变 |
 | **音频** | **完全未实现**：`Music.gp`/`Opmusic.gp`/`Edmusic.gp` 未解析，FM 驱动 `Fmdrv.com` 未逆向，无 MIDI/音效 |
 | **游戏内文本** | ✅ C 引擎已加载 `Message.gp`（LS11，5 条 / 2350 句）并在底部弹框显示；`Mainevt.gp` 事件脚本逻辑仍未逆向 |
 | **未解析的数据文件** | `Maincmd.gp`、`Mainobj.gp`、`Kisetsu.gp`、`Montage.gp`、`Opendat.gp`、`Enddat.gp`、`Disk-*.gp` 等裸格式未解压；`Mainitem.gp` 已可画廊预览但未接入数值系统 |
 | **未逆向的程序** | `Main.exe`/`Genpei.com`/`Open.exe`/`End.exe` 的主循环、菜单、合战逻辑 |
 
-### 四、2200G 上的子任务（1–7 已完成）
+### 四、2200G 上的子任务（1–8 已完成）
 
 > 说明：当前全部渲染为软件 blit（640x400），2200G（Ryzen 3 2200G + Vega 8）完全
 > 够用；以下均不涉及重 GPU/着色器开发，先打通**逻辑层**。
@@ -842,7 +874,7 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
   - 端到端 `--click '560,231@1;r300,300@3'`：`終了` → AI → 结算框 → 右键关闭 →
     历史事件 →（自动过场）→ 守城战，全链路 `[AI]`/`[EVENT]`/`[KASSEN]` 日志连贯。
 
-**子任务 8 — 存档 / 读档（`Savedata.gp` 侦察 + 原生快照）— ✅ 已完成（第一部分）**
+**子任务 8 — 存档 / 读档 + 片头流程 — ✅ 已完成**
 - **原版 `Savedata.gp` 结构侦察**（`tools/probe_savedata.py`，只读）：
   - 434030 B = **10 × 43403 B** 定长槽；槽头 `u16 LE 年@0`、`u8 月@2`、`u8 标志@3`，
     18 B 处有第二份年月头；24 B 起为 15 项势力表（`01 00 02 00 … 0e 00 ff ff`）；
@@ -867,5 +899,37 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
     （夺城结果一并持久化）；
   - 损坏/缺失存档被安全拒绝（截断、magic 不符、无法打开均打印 `[ERROR]` 后继续）。
 
+**子任务 8（第二部分）— 片头标题 / 剧本选择 / 大名选择**
+- 新增 `include/opening.h` / `src/opening.c`（424 行）：
+  - **标题屏**：`Logo.gp` 5 块（KOEI 标志、歴史シミュレーションゲーム、
+    KOEI PRESENTS、A KOU SHIBUSAWA PRODUCTION、版权）+ SJIS「源平合戦」标题，
+    任意键/点击 → 剧本选择；
+  - **剧本选择**：4 个剧本（1180/9 源氏挙兵、1183/6 倶利伽羅峠、1184/9 一ノ谷、
+    1185/9 壇ノ浦）显示年月与标题，`1-4`/`↑↓`/`ENTER`/点击/`ESC`；
+  - **大名选择**：该剧本中占有城池的势力（最多 15），显示旗色、势力名、当主姓名
+    与 `Kaodata` 128×160 立绘；`↑↓`/数字/`ENTER`/点击/`ESC`。
+- `scenario.c` 新增 `scenario_get_title/year/month()` 与
+  `scenario_faction_leader()`：**当主 = 该势力最强城主**（原始剧本无显式大名字段），
+  与史实一致 —— 鎌倉源氏→源頼朝、平氏→平清盛、木曽源氏→源義仲、
+  奥州藤原氏→藤原秀衡、甲斐源氏→武田信義、比叡山僧兵→大庭景親 等。
+- `src/main.c` 集成：仅当**没有**任何跳转类参数（`--map`/`--select-castle`/
+  `--attack`/`--defend`/`--do-cmd`/`--end-turn`/`--ai-step`/`--trigger-event`/
+  `--test-msg`/`--gallery`/`--preview-npk`/`--unified`/`--load`/`-s`/`-c`/`-o`/
+  `--faction`）时进入片头；确认大名后设置 `player_faction`、当前城（当主居城）、
+  武将立绘与相机，直接进入地图并打开指令菜单。其余路径行为完全不变。
+- 验收（`SDL_VIDEODRIVER=dummy`，零警告）：
+  - `--frames 2 --screenshot`：标题屏（KOEI 标志 + 歴史シミュレーションゲーム +
+    源平合戦 + 版权）渲染成功；
+  - `--click '320,200@1;250,110@2;200,74@3'`：标题 → 剧本 0 → 大名 0 →
+    `[OPENING] enter map: faction=0 castle=30 officer=0 date=1180/9`（鎌倉・源頼朝）；
+  - `--click '320,200@1;250,110@2;200,84@3'`：选 **平氏** →
+    `faction=1 castle=16 officer=45`（福原・平清盛），地图/指令菜单正确；
+  - `--click '320,200@1;250,166@2;200,74@3'`：选剧本 2 →
+    `date=1183/6`，地图切换到寿永二年；
+  - 全部既有回归路径（`--map`、`--select-castle`、`--attack`、`--do-cmd`、
+    `--end-turn`、`--ai-step`、`--trigger-event`、`--defend`、`--unified`、
+    `--gallery`、`--preview-npk`、`--test-msg`、`--scenario`、`--save`/`--load`、
+    鼠标指令链路）均**跳过片头**并保持原输出。
+
 补充（非本期）：**音频**（先逆向 `Fmdrv.com` + `Music.gp` 的 FM 音源格式）、
-**存档**（`Savedata.gp`）与**战略行军路线**（跨城出兵）仍属后续方向。
+**原版 `Savedata.gp` 字节写入**与**战略行军路线**（跨城出兵）仍属后续方向。

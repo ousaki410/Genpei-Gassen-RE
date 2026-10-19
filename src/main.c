@@ -13,6 +13,7 @@
 #include "ai.h"
 #include "event.h"
 #include "save.h"
+#include "opening.h"
 #include "npk.h"
 #include "scenario.h"
 
@@ -976,6 +977,11 @@ int main(int argc, char *argv[]) {
     // Turn / domestic-affairs state.
     int faction_override = -1;             // --faction
     bool unified_debug = false;            // --unified: force 天下統一 ending
+    // Sub-task 8: remember explicit start-point overrides so the opening flow
+    // can be skipped for every existing direct-to-map CLI path.
+    bool scenario_given = false;           // -s / --scenario
+    bool castle_given = false;             // -c / --castle
+    bool officer_given = false;            // -o / --officer
     int move_to_castle = -1;               // --move-to (with --do-cmd move)
     TurnCommand do_cmd = TURN_CMD_NONE;    // --do-cmd
     int end_turns = 0;                     // --end-turn
@@ -1041,6 +1047,10 @@ int main(int argc, char *argv[]) {
     NpkFile gallery_npk = {0};
     ImageDecoded gallery_img = {0};
 
+    // 子任务 8: opening flow (title -> scenario -> daimyo -> map).
+    OpeningState g_opening;
+    memset(&g_opening, 0, sizeof(g_opening));
+
     const char *env_dir = getenv("YPHZ_DATA_DIR");
     if (env_dir) {
         snprintf(s_asset_dir, sizeof(s_asset_dir), "%s", env_dir);
@@ -1057,17 +1067,20 @@ int main(int argc, char *argv[]) {
             snprintf(s_asset_dir, sizeof(s_asset_dir), "%s", argv[++i]);
         } else if ((strcmp(argv[i], "--officer") == 0 || strcmp(argv[i], "-o") == 0) && i + 1 < argc) {
             cur_officer = atoi(argv[++i]);
+            officer_given = true;
             if (cur_officer < 0) cur_officer = 0;
             if (cur_officer >= MAX_OFFICERS) cur_officer = MAX_OFFICERS - 1;
         } else if (strcmp(argv[i], "--map") == 0 || strcmp(argv[i], "-m") == 0) {
             start_map_mode = true;
         } else if ((strcmp(argv[i], "--scenario") == 0 || strcmp(argv[i], "-s") == 0) && i + 1 < argc) {
             cur_scenario = atoi(argv[++i]);
+            scenario_given = true;
             if (cur_scenario >= 1 && cur_scenario <= 4) cur_scenario--;
             if (cur_scenario < 0) cur_scenario = 0;
             if (cur_scenario > 3) cur_scenario = 3;
         } else if ((strcmp(argv[i], "--castle") == 0 || strcmp(argv[i], "-c") == 0) && i + 1 < argc) {
             cur_castle = atoi(argv[++i]);
+            castle_given = true;
             if (cur_castle < 0) cur_castle = 0;
             if (cur_castle >= MAX_CASTLES) cur_castle = MAX_CASTLES - 1;
         } else if (strcmp(argv[i], "--select-castle") == 0 && i + 1 < argc) {
@@ -1243,6 +1256,18 @@ int main(int argc, char *argv[]) {
         show_cmd_menu = false;
     }
 
+    // 子任务 8: the opening flow (Logo.gp title -> scenario -> daimyo -> map)
+    // only runs for a plain launch. Every "jump" argument keeps the original
+    // direct-to-map behaviour so all existing CLI regression paths are intact.
+    bool cli_jump = start_map_mode || select_castle_mode || test_msg >= 0 ||
+                    do_cmd != TURN_CMD_NONE || end_turns > 0 || ai_step ||
+                    trigger_event >= 0 || attack_from >= 0 || defend_from >= 0 ||
+                    preview_npk_name != NULL || gallery_mode || unified_debug ||
+                    load_path != NULL || save_path != NULL || dump_state ||
+                    scenario_given || castle_given || officer_given ||
+                    faction_override >= 0;
+    bool opening_mode = !cli_jump;
+
     if (!hal_video_init("《源平合戦》 - Linux Native Video Engine (SDL2/PC-98)", 2)) {
         return 1;
     }
@@ -1417,6 +1442,11 @@ int main(int argc, char *argv[]) {
 
     // Portrait embedded in domestic-affairs report dialogues.
     ImageDecoded dlg_kao = {0};
+
+    // 子任务 8: start the opening flow for a plain launch (no jump CLI args).
+    if (opening_mode) {
+        opening_begin(&g_opening, s_asset_dir);
+    }
 
     // --preview-npk: decode one NPK016 block and display it standalone.
     if (preview_npk_name) {
@@ -1640,6 +1670,36 @@ int main(int argc, char *argv[]) {
         if (in.quit) running = false;
 
         const YphzKey key = in.key;
+
+        // --- 子任务 8: opening flow (title -> scenario -> daimyo) -----------
+        // While it is on screen the opening owns all input; on the confirming
+        // frame it hands a ready Scenario/TurnState back and we jump straight to
+        // rendering so the map appears immediately.
+        if (opening_active(&g_opening)) {
+            if (opening_step(&g_opening, &g_scenario, &g_turn, &in, key, snd_path)) {
+                player_faction = g_turn.player_faction;
+                cur_scenario = g_scenario.scenario_idx;
+                int leader = scenario_faction_leader(&g_scenario, player_faction);
+                cur_officer = (leader >= 0) ? leader : 0;
+                int lc = (leader >= 0) ? g_scenario.officers[leader].castle_id : -1;
+                cur_castle = (lc >= 0 && lc < g_scenario.num_castles) ? lc : 0;
+                map_mode = true;
+                show_castle_card = true;
+                show_cmd_menu = (g_scenario.castles[cur_castle].faction_id ==
+                                 player_faction);
+                camera_x = clamp_camera_x(g_scenario.castles[cur_castle].map_x - 320,
+                                          map_w);
+                refresh_officer_portrait(cur_officer, &g_scenario, kao_data,
+                                         kao_size, officer_offsets, &cur_kao);
+                update_window_title(cur_officer, use_mask, bg_mode, map_mode,
+                                    camera_x, cur_scenario, &g_scenario, cur_castle);
+                printf("[OPENING] enter map: faction=%d castle=%d officer=%d "
+                       "date=%d/%d\n",
+                       player_faction, cur_castle, cur_officer,
+                       g_turn.year, g_turn.month);
+            }
+            goto render_frame;
+        }
 
         // 天下統一 ending: any input ends the run.
         if (g_ending_mode) {
@@ -2228,9 +2288,14 @@ int main(int argc, char *argv[]) {
         }
 
         // --- Render Frame ---
+    render_frame:
         hal_video_clear(0);
 
-        if (preview_mode) {
+        if (opening_active(&g_opening)) {
+            // 子任务 8: title / scenario / daimyo screens.
+            opening_render(&g_opening, &g_scenario, kao_data, kao_size,
+                           officer_offsets);
+        } else if (preview_mode) {
             // Standalone NPK016 block viewer (--preview-npk).
             draw_centered_image(&preview_img);
             char cap[128];
@@ -2680,6 +2745,7 @@ int main(int argc, char *argv[]) {
     free_decoded_image(&s_battle_duel);
     free_decoded_image(&s_battle_kao[0]);
     free_decoded_image(&s_battle_kao[1]);
+    opening_free(&g_opening);
     npk_free(&s_hke_pack);
     npk_free(&s_hkumi_pack);
     npk_free(&s_hikback_pack);

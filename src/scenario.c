@@ -92,6 +92,59 @@ const char* scenario_get_circuit_name(int circuit_id) {
     return "";
 }
 
+const char* scenario_get_title(int scenario_idx) {
+    if (scenario_idx >= 0 && scenario_idx < MAX_SCENARIOS) {
+        return s_sc_titles[scenario_idx];
+    }
+    return "";
+}
+
+int scenario_get_year(int scenario_idx) {
+    static const int years[MAX_SCENARIOS] = {1180, 1183, 1184, 1185};
+    if (scenario_idx >= 0 && scenario_idx < MAX_SCENARIOS) return years[scenario_idx];
+    return 0;
+}
+
+int scenario_get_month(int scenario_idx) {
+    static const int months[MAX_SCENARIOS] = {9, 6, 9, 9};
+    if (scenario_idx >= 0 && scenario_idx < MAX_SCENARIOS) return months[scenario_idx];
+    return 0;
+}
+
+int scenario_faction_leader(const Scenario *sc, int faction_id) {
+    if (!sc || faction_id < 0) return -1;
+
+    // The castle records own the reliable faction assignment, so prefer the
+    // strongest of the faction's castle lords (historically the daimyo).
+    int best = -1;
+    int best_score = -1;
+    for (int c = 0; c < sc->num_castles; c++) {
+        const ScenarioCastle *cs = &sc->castles[c];
+        if (cs->faction_id != faction_id) continue;
+        int oid = cs->lord_officer_id;
+        if (oid < 0 || oid >= sc->num_officers) continue;
+        const ScenarioOfficer *o = &sc->officers[oid];
+        int score = o->lead + o->war + o->intel + o->politics + o->charm;
+        if (score > best_score) {
+            best_score = score;
+            best = oid;
+        }
+    }
+    if (best >= 0) return best;
+
+    // Fallback for factions whose castles are all neutral.
+    for (int i = 0; i < sc->num_officers; i++) {
+        const ScenarioOfficer *o = &sc->officers[i];
+        if (!o->is_active || o->faction_id != faction_id) continue;
+        int score = o->lead + o->war + o->intel + o->politics + o->charm;
+        if (score > best_score) {
+            best_score = score;
+            best = i;
+        }
+    }
+    return best;
+}
+
 bool scenario_load(const char *sndata_path, int scenario_idx, Scenario *out_sc) {
     if (!sndata_path || !out_sc || scenario_idx < 0 || scenario_idx >= MAX_SCENARIOS) return false;
     memset(out_sc, 0, sizeof(Scenario));

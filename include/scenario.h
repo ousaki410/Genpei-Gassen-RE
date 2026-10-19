@@ -89,4 +89,14 @@ const FactionDef* scenario_get_faction(int faction_id);
 // Get circuit / province region name
 const char* scenario_get_circuit_name(int circuit_id);
 
+// Static metadata for the opening scenario-select screen.
+const char* scenario_get_title(int scenario_idx);
+int scenario_get_year(int scenario_idx);
+int scenario_get_month(int scenario_idx);
+
+// Faction leader (当主): the strongest castle lord of that faction, since the
+// original scenario records carry no explicit "daimyo" field. Returns the
+// officer id, or -1 when the faction holds no castles/officers.
+int scenario_faction_leader(const Scenario *sc, int faction_id);
+
 #endif // YPHZ_SCENARIO_H

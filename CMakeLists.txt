@@ -143,6 +143,7 @@ add_executable(yphz_engine
     src/ai.c
     src/event.c
     src/save.c
+    src/opening.c
     src/npk.c)
 
 target_include_directories(yphz_engine PRIVATE
