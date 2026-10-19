@@ -51,6 +51,7 @@ static YphzKey translate_key(SDL_Keycode sym) {
         case SDLK_2:            return YPHZ_KEY_2;
         case SDLK_3:            return YPHZ_KEY_3;
         case SDLK_4:            return YPHZ_KEY_4;
+        case SDLK_5:            return YPHZ_KEY_5;
         default:                return YPHZ_KEY_NONE;
     }
 }

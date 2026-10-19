@@ -137,7 +137,8 @@ add_executable(yphz_engine
     src/input.c
     src/decompress.c
     src/message.c
-    src/scenario.c)
+    src/scenario.c
+    src/turn.c)
 
 target_include_directories(yphz_engine PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/include")

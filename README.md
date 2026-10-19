@@ -134,6 +134,9 @@ cmake --build build -j
 | `--map` | `-m` | 关 | 直接以战略地图模式启动 |
 | `--test-msg <n>` | — | — | 在战略地图上弹出 `Message.gp` 第 n 条台词对话框（配合 `--screenshot` 无头验证） |
 | `--msg-entry <n>` | — | `0` | `--test-msg` 使用的 LS11 条目编号（Message.gp 共 5 条） |
+| `--faction <n>` | — | 鎌倉所属 | 覆盖玩家操作势力（0..14）；默认取鎌倉（30 号城）的势力 |
+| `--do-cmd <cmd>` | — | — | 无头执行一次内政命令：`develop` / `recruit` / `tax` / `officers` / `end`；自动选中该城首个未行动武将并弹出带立绘的结算框 |
+| `--end-turn <n>` | — | `0` | 无头连续推进 n 个月（跨年进位），并弹出最后一月的收入结算框 |
 | `--frames <n>` | — | `0` | 运行 n 帧后自动退出（`0` = 无限，用于回归/无头测试） |
 | `--screenshot <path>` | — | — | 第 2 帧导出 640x400 BMP 并退出（隐含 `--frames 10`） |
 
@@ -142,6 +145,16 @@ cmake --build build -j
 ```bash
 SDL_VIDEODRIVER=dummy ./bin/yphz_engine --select-castle 30 --frames 5 --screenshot /tmp/c30.bmp
 SDL_VIDEODRIVER=dummy ./bin/yphz_engine --test-msg 1 --frames 5 --screenshot /tmp/msg.bmp
+
+# 子任务 3：内政命令 / 回合结算（stdout 会打印前后数值，便于逐项核对）
+SDL_VIDEODRIVER=dummy ./bin/yphz_engine --select-castle 30 --do-cmd develop --frames 2 --screenshot /tmp/dev.bmp
+SDL_VIDEODRIVER=dummy ./bin/yphz_engine --select-castle 30 --do-cmd recruit --frames 2 --screenshot /tmp/rec.bmp
+SDL_VIDEODRIVER=dummy ./bin/yphz_engine --select-castle 30 --do-cmd tax     --frames 2 --screenshot /tmp/tax.bmp
+SDL_VIDEODRIVER=dummy ./bin/yphz_engine --select-castle 30 --do-cmd officers --frames 2 --screenshot /tmp/ros.bmp
+SDL_VIDEODRIVER=dummy ./bin/yphz_engine --select-castle 30 --end-turn 5 --frames 2 --screenshot /tmp/end.bmp
+
+# 非己方城池：命令会被拒绝（--faction 0 = 源氏，16 号城属平氏）
+SDL_VIDEODRIVER=dummy ./bin/yphz_engine --select-castle 16 --faction 0 --do-cmd tax --frames 2 --screenshot /tmp/deny.bmp
 ```
 
 ### 键盘操作
@@ -149,14 +162,17 @@ SDL_VIDEODRIVER=dummy ./bin/yphz_engine --test-msg 1 --frames 5 --screenshot /tm
 | 模式 | 按键 | 功能 |
 |---|---|---|
 | 通用 | `M` | 战略地图 ⇄ 武将立绘 切换 |
-| 通用 | `ESC` | 依次关闭：台词对话框 → 城池情报卡 → 无则退出 |
-| 地图 | `1`–`4` | 切换剧本 |
+| 通用 | `ESC` | 依次返回：结算对话框 → 武将一览 → 指令菜单 → 城池情报卡 → 退出 |
+| 地图 | `1`–`5` | **指令菜单打开时**：开发 / 征兵 / 征税 / 武将 / 终了 |
+| 地图 | `1`–`4` | **指令菜单关闭时**：切换剧本 |
 | 地图 | `[` / `]` | 上一 / 下一城池 |
 | 地图 | `O` / `Enter` | 查看当前城城主（跳转立绘） |
-| 地图 | `C` / `Space` | 开/关城池情报卡 |
+| 地图 | `C` / `Space` | 开/关城池情报卡（己方城池会同时弹出指令菜单） |
 | 地图 | `T` | 打开 `Message.gp` 台词对话框（再按翻到下一句） |
 | 地图 | `TAB` | 在主要据点间跳转 |
 | 地图 | `←`/`→`（或 `A`/`D`） | 地图水平平移 |
+| 武将一览 | `↑`/`↓` | 滚动名册（每页 11 人） |
+| 武将一览 | 左键点击某行 | 查看该武将立绘与能力；若处于命令选人状态则直接执行该命令 |
 | 武将 | `←`/`→` | 上/下一名武将 |
 | 武将 | `↑`/`↓` | ±10 名武将 |
 | 武将 | `F` | 跳到下一名拥有专属立绘的武将 |
@@ -167,10 +183,12 @@ SDL_VIDEODRIVER=dummy ./bin/yphz_engine --test-msg 1 --frames 5 --screenshot /tm
 
 | 操作 | 功能 |
 |---|---|
-| 左键点击城池旗标 | 命中测试选中该城（`camera_x` + 屏幕坐标 → 1696x360 世界坐标）并展开情报卡 |
+| 左键点击城池旗标 | 命中测试选中该城（`camera_x` + 屏幕坐标 → 1696x360 世界坐标）并展开情报卡；己方城池同时弹出指令菜单 |
+| 左键点击指令菜单项 | 执行开发 / 征兵 / 征税 / 武将一览 / 评定终了 |
+| 左键点击名册行 | 查看武将立绘与能力（或作为命令执行者） |
 | 左键点击空白处拖拽 | 拖动平移全景地图（地形跟随指针） |
 | 指针靠近窗口左右边缘 | 自动平滑卷动地图 |
-| 右键点击 | 关闭城池情报卡 |
+| 右键点击 | 返回上一级（结算框 → 名册 → 指令菜单 → 情报卡） |
 
 > 输入实现：`src/input.c` 独占所有 `SDL_PollEvent`/`SDL_GetMouseState` 调用，向主循环
 > 输出一份 `InputState`（键盘边沿、逻辑坐标 640x400 的鼠标位置/位移、左右键边沿）。
@@ -197,7 +215,7 @@ python3 tools/extractor/extract_palette.py   # Mainpal/Losepal -> extracted_asse
 
 ### 一、源码文件职责与已实现功能
 
-**`src/main.c`（879 行）— 入口与渲染主循环**
+**`src/main.c`（1371 行）— 入口与渲染主循环**
 - CLI 参数解析（见上表）+ `YPHZ_DATA_DIR` 环境变量。
 - 资源装载 `load_file()`：`Mainpal.pld`、`JIS.FNT`/`FONT.CHR`、`Main.exe`（读
   `0x4D3BB` 处 90 个立绘偏移表）、`Kaodata.gp`、`Hikback.gp`、`Maincmd2.gp`、
@@ -215,6 +233,25 @@ python3 tools/extractor/extract_palette.py   # Mainpal/Losepal -> extracted_asse
 - 截图导出（阶段帧 BMP）、固定 ~60 FPS 主循环。
 - **台词对话框**：`Message.gp` 文本经 SJIS 半/全角软换行，绘制于画面底部（光荣
   风格金/白描边深蓝窗），角标显示 `【会話】[entry:index]`。
+- **内政 UI（子任务 3）**：己方城池情报卡右侧弹出 `指令` 菜单（1-5 / 鼠标悬停高亮），
+  名册模态窗（统率/武力/知谋，未行动者高亮、已行动者暗显，↑↓ 滚动），
+  带武将立绘的结算对话框（`【結果】`，立绘 128x160 + 右侧战报），顶栏实时显示 `年/月`。
+
+**`src/turn.c`（317 行）— 回合与内政状态机**
+- `TurnState`：玩家势力、`year/month`（与 `Scenario` 双向同步）、401 人 `acted`
+  位图（本回合是否已行动）。
+- `turn_find_idle_officer()`：优先城主，其次按编号取城内首个未行动武将。
+- `turn_list_castle_officers()`：枚举某势力驻某城的全部在籍武将（名册/选人用）。
+- 三条内政命令（消耗执行武将的 action）：
+  - **開発**：花费金 = `200 + 石高/50`；石高 `+100+政治*3+知謀`，城防 `+1+政治/25`。
+  - **徴兵**：花费金 `300+兵力/2`、兵糧 `100+兵力/4`；兵力 `+100+統率*2`，
+    上限 `500+石高/8`。
+  - **徴税**：金 `+100+政治*20`；士気 `-(3+(100-政治)/25)`（下限 0）。
+  - 原始剧本没有独立「民忠」字段，因此以 `morale`（士気）作为民忠代理值。
+- `turn_end()`：`month++`（>12 则 `year++`、`month=1`）；**所有城池**按月
+  `金 += max(20, 石高/50)`，逢 3/6/9/12 月 `石高 += max(10, 石高/60)`；
+  重置全员 `acted`。战报只汇总玩家势力收入。
+- `turn_run_command_officer()`：可指定执行武将（名册点选），`-1` 则自动选人。
 
 **`src/hal_video.c`（377 行）— 视频 / 字体 HAL**
 - SDL2 窗口/渲染器/纹理初始化（640x400 逻辑分辨率，nearest 缩放，加速失败回退软件）。
@@ -266,7 +303,8 @@ python3 tools/extractor/extract_palette.py   # Mainpal/Losepal -> extracted_asse
 **`include/`**：`scenario.h`（`FactionDef`/`ScenarioOfficer`/`ScenarioCastle`/
 `Scenario`）、`decompress.h`（`ImageDecoded` + `ls11_decompress_stream`）、
 `hal_video.h`（`ColorRGBA` + HAL/字体 API）、`input.h`（`YphzKey`/`InputState`）、
-`message.h`（`MessageFile`/`MessageEntry`）、`sdl_compat.h`（SDL2/SDL3 引入切换）。
+`message.h`（`MessageFile`/`MessageEntry`）、`turn.h`（`TurnState`/`TurnCommand`/
+`TurnResult`）、`sdl_compat.h`（SDL2/SDL3 引入切换）。
 所有结构体 `#pragma pack(push,1)`。
 
 **`tools/extractor/`（Python 参考实现）**
@@ -290,6 +328,8 @@ python3 tools/extractor/extract_palette.py   # Mainpal/Losepal -> extracted_asse
 - 城池情报卡、BMP 截图、CMake 构建（内置 SDL2）。
 - 统一输入层：键盘（`YphzKey`）+ 鼠标（点击选城 / 拖拽 / 边缘卷动 / 右键关闭情报卡）。
 - LS11 文本解压（`Message.gp`，C 实现，与 Python 逐字节一致）+ 底部光荣风格台词对话框。
+- 回合与内政闭环：指令菜单（開発/徴兵/徴税/武将/終了）、武将名册与点选执行、
+  带立绘的结算对话框、按月推进与跨年、全城收入/季度石高增长、全员行动重置。
 
 ### 三、尚未实现 / TODO ⛔
 
@@ -305,7 +345,7 @@ python3 tools/extractor/extract_palette.py   # Mainpal/Losepal -> extracted_asse
 | **未解析的数据文件** | `Maincmd.gp`（菜单图，仅作背景）、`Mainobj.gp`、`Mainitem.gp`（道具）、`Kisetsu.gp`、`Montage.gp`、`Opendat.gp`、`Enddat.gp`、`Disk-*.gp`、NPC 立绘（64x80 通用）等 |
 | **未逆向的程序** | `Main.exe`/`Genpei.com`/`Open.exe`/`End.exe` 的主循环、菜单、合战逻辑 |
 
-### 四、2200G 上的 3 个子任务（1、2 已完成，3 待办）
+### 四、2200G 上的 3 个子任务（1–3 已完成）
 
 > 说明：当前全部渲染为软件 blit（640x400），2200G（Ryzen 3 2200G + Vega 8）完全
 > 够用；以下均不涉及重 GPU/着色器开发，先打通**逻辑层**。
@@ -332,14 +372,21 @@ python3 tools/extractor/extract_palette.py   # Mainpal/Losepal -> extracted_asse
 - 验收：`SDL_VIDEODRIVER=dummy ./bin/yphz_engine --test-msg 1 --frames 5
   --screenshot /tmp/msg.bmp` 得到正确台词框；`-Wall -Wextra` 零警告。
 
-**子任务 3 — 回合推进 + 最小内政闭环**
-- 基于 `Scenario`（已有 `year`/`month` 与城池 `rice`/`gold`/`troops`/`morale`/
-  `training`/`defense`）实现「结束回合」：按月推进、结算收入。
-- 增加最小内政命令面板：选中己方城池 → **开发 / 征兵 / 征税**，修改对应数值并即时
-  在情报卡反映。
-- 验收：可连续结束 N 个月，城池数值按规则变化，`年/月` 正确递增。
-- 理由：完全复用现有 `Sndata.gp` 数据与坐标/连接图，不依赖合战与 AI，适合在 2200G
-  上快速迭代，并为后续行军/合战铺路。
+**子任务 3 — 回合推进 + 最小内政闭环（含武将头像联动）— ✅ 已完成**
+- 新增 `include/turn.h` / `src/turn.c`：维护玩家势力、`year`/`month`（与 `Scenario`
+  同步）、401 人 `acted` 标记；提供首个未行动武将选择、城内武将枚举、命令执行。
+- 己方城池情报卡右侧弹出光荣风格 `指令` 菜单（`1`–`5` 或鼠标点击；`ESC`/右键返回）。
+  - `開発`：金 → 石高 + 城防；`徴兵`：金 + 兵糧 → 兵力（受 `500+石高/8` 上限）；
+  - `徴税`：金 +，士気 −（原数据无民忠字段，以士気代理）；
+  - `武将`：城内武将名册（统率/武力/知谋，未行动者高亮），点选查看立绘；
+  - `終了`：`month++`、跨年进位、全城月度金收入 + 季度石高增长、全员行动重置。
+- 命令执行前先进入名册选择执行武将；结果对话框调用 `Kaodata.gp` 0x728 解码器，
+  左侧渲染 128x160 立绘，右侧显示 `源頼朝 / 開発 完了 / 石高 +457 城防 +4 金 -1120`。
+- 新增 `--do-cmd <develop|recruit|tax|officers|end>` 与 `--end-turn <N>` 无头参数；
+  stdout 同时打印 **BEFORE/AFTER** 数值，便于逐项核对（含跨年 `1180/12 → 1181/1`）。
+- 验收：`--do-cmd develop` 石高 `46000→46457`、金 `40000→38880`；`recruit`
+  兵力 `220→450`；`tax` 金 `40000→42000`、士気 `230→227`；`--end-turn 5` 到
+  `1181/2`，第 3 个月石高 `+3532`。`-Wall -Wextra` 零警告。
 
 补充（非本期）：**音频**（先逆向 `Fmdrv.com` + `Music.gp` 的 FM 音源格式）与
 **合战战术界面**属于更大体量的独立方向，建议在以上 3 项之后再立项。

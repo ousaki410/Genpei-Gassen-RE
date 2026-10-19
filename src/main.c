@@ -8,6 +8,7 @@
 #include "input.h"
 #include "decompress.h"
 #include "message.h"
+#include "turn.h"
 #include "scenario.h"
 
 static char s_asset_dir[256] = "games/yphz";
@@ -34,12 +35,33 @@ static uint8_t* load_file(const char *rel_path, size_t *out_size) {
     return buf;
 }
 
+static void decode_officer_portrait(int officer_id, const Scenario *sc, const uint8_t *kao_data, size_t kao_size, const uint32_t *officer_offsets, ImageDecoded *out) {
+    if (!out) return;
+    free_decoded_image(out);
+    if (!sc || officer_id < 0 || officer_id >= sc->num_officers) return;
+    int fid = sc->officers[officer_id].face_id;
+    int use_fid = (fid >= 0 && fid < 90) ? fid : (officer_id % 15) + 40;
+    kaodata_decompress_officer(kao_data, kao_size, officer_offsets[use_fid], out);
+}
+
 static void refresh_officer_portrait(int cur_officer, const Scenario *sc, const uint8_t *kao_data, size_t kao_size, const uint32_t *officer_offsets, ImageDecoded *cur_kao) {
-    if (!sc || cur_officer < 0 || cur_officer >= sc->num_officers) return;
-    int fid = sc->officers[cur_officer].face_id;
-    int use_fid = (fid >= 0 && fid < 90) ? fid : (cur_officer % 15) + 40;
-    free_decoded_image(cur_kao);
-    kaodata_decompress_officer(kao_data, kao_size, officer_offsets[use_fid], cur_kao);
+    decode_officer_portrait(cur_officer, sc, kao_data, kao_size, officer_offsets, cur_kao);
+}
+
+// Populate the report dialogue state from a domestic-command result.
+static void show_turn_result(const TurnResult *r, bool *show_dialog,
+                             bool *dlg_custom, int *dlg_officer,
+                             char *dlg_text, size_t dlg_sz, ImageDecoded *dlg_kao,
+                             const Scenario *sc, const uint8_t *kao_data,
+                             size_t kao_size, const uint32_t *officer_offsets) {
+    *dlg_custom = true;
+    *dlg_officer = r->officer_id;
+    snprintf(dlg_text, dlg_sz, "%s", r->text);
+    *show_dialog = true;
+    if (r->officer_id >= 0) {
+        decode_officer_portrait(r->officer_id, sc, kao_data, kao_size,
+                                officer_offsets, dlg_kao);
+    }
 }
 
 static void update_window_title(int cur_officer, bool use_mask, int bg_mode, bool map_mode, int camera_x, int scenario_idx, const Scenario *sc, int cur_castle) {
@@ -144,22 +166,170 @@ static void draw_wrapped_sjis(int x, int y, int max_w, int line_h,
     }
 }
 
-// Classic Koei dialogue window anchored to the bottom of the screen.
-static void draw_dialog_box(const char *text, int entry, int index) {
-    const int cx = 16, cy = 286, cw = 608, ch = 92;
+// ---------------------------------------------------------------------------
+// Domestic-affairs UI (command menu / officer roster / result dialogue)
+// ---------------------------------------------------------------------------
+
+#define SJIS_CMD_TITLE "\x8e\x77\x97\xdf"                   // 指令
+#define SJIS_RESULT    "\x81\x79\x95\x5d\x92\xe8\x81\x7a"   // 【評定】
+#define SJIS_ROSTER    "\x95\x90\x8f\xab\x88\xea\x97\x97"   // 武将一覧
+#define SJIS_LEAD      "\x93\x9d\x97\xa6"                   // 統率
+#define SJIS_WAR       "\x95\x90\x97\xcd"                   // 武力
+#define SJIS_INTEL     "\x92\x6d\x96\x64"                   // 知謀
+
+#define CMD_MENU_X        496
+#define CMD_MENU_Y        40
+#define CMD_MENU_W        128
+#define CMD_MENU_TITLE_H  22
+#define CMD_MENU_ITEM_H   26
+#define CMD_MENU_ITEMS    5
+#define CMD_MENU_H        (CMD_MENU_TITLE_H + CMD_MENU_ITEMS * CMD_MENU_ITEM_H + 8)
+
+#define ROSTER_X          52
+#define ROSTER_Y          40
+#define ROSTER_W          436
+#define ROSTER_H          310
+#define ROSTER_ROWS_TOP   52
+#define ROSTER_ROW_H      22
+#define ROSTER_ROWS       11
+
+static int sjis_width(const char *s) {
+    int w = 0;
+    const uint8_t *p = (const uint8_t*)s;
+    while (p && *p) {
+        if (*p == '\n') { p++; continue; }
+        if (((*p >= 0x81 && *p <= 0x9F) || (*p >= 0xE0 && *p <= 0xFC)) && p[1]) {
+            w += 16; p += 2;
+        } else {
+            w += 8; p++;
+        }
+    }
+    return w;
+}
+
+// Which command-menu row is under the pointer? -1 when outside.
+static int cmd_menu_hit(int mouse_x, int mouse_y) {
+    if (mouse_x < CMD_MENU_X || mouse_x >= CMD_MENU_X + CMD_MENU_W) return -1;
+    int top = CMD_MENU_Y + CMD_MENU_TITLE_H;
+    if (mouse_y < top) return -1;
+    int idx = (mouse_y - top) / CMD_MENU_ITEM_H;
+    if (idx < 0 || idx >= CMD_MENU_ITEMS) return -1;
+    return idx;
+}
+
+static void draw_command_menu(int hover) {
+    static const char *labels[CMD_MENU_ITEMS] = {
+        "\x8a\x4a\x94\xad",   // 開発
+        "\x92\xa5\x95\xba",   // 徴兵
+        "\x92\xa5\x90\xc5",   // 徴税
+        "\x95\x90\x8f\xab",   // 武将
+        "\x8f\x49\x97\xb9"    // 終了
+    };
+
+    hal_video_fill_rect(CMD_MENU_X, CMD_MENU_Y, CMD_MENU_W, CMD_MENU_H, 1);
+    hal_video_draw_rect(CMD_MENU_X, CMD_MENU_Y, CMD_MENU_W, CMD_MENU_H, 6);
+    hal_video_draw_rect(CMD_MENU_X + 2, CMD_MENU_Y + 2,
+                        CMD_MENU_W - 4, CMD_MENU_H - 4, 7);
+    hal_video_draw_text_sjis(CMD_MENU_X + 10, CMD_MENU_Y + 4, SJIS_CMD_TITLE, 6);
+
+    for (int i = 0; i < CMD_MENU_ITEMS; i++) {
+        int iy = CMD_MENU_Y + CMD_MENU_TITLE_H + i * CMD_MENU_ITEM_H;
+        bool hl = (i == hover);
+        if (hl) {
+            hal_video_fill_rect(CMD_MENU_X + 5, iy, CMD_MENU_W - 10,
+                                CMD_MENU_ITEM_H - 2, 6);
+        }
+        uint8_t fg = hl ? 1 : 7;
+        char num[8];
+        snprintf(num, sizeof(num), "%d", i + 1);
+        hal_video_draw_text_sjis(CMD_MENU_X + 10, iy + 5, num, fg);
+        hal_video_draw_text_sjis(CMD_MENU_X + 26, iy + 5, labels[i], fg);
+    }
+}
+
+static void draw_officer_roster(const Scenario *sc, const TurnState *ts,
+                               const int *ids, int count, int scroll,
+                               const char *title) {
+    hal_video_fill_rect(ROSTER_X, ROSTER_Y, ROSTER_W, ROSTER_H, 1);
+    hal_video_draw_rect(ROSTER_X, ROSTER_Y, ROSTER_W, ROSTER_H, 6);
+    hal_video_draw_rect(ROSTER_X + 2, ROSTER_Y + 2,
+                        ROSTER_W - 4, ROSTER_H - 4, 7);
+
+    hal_video_draw_text_sjis(ROSTER_X + 12, ROSTER_Y + 6, title, 6);
+
+    char counted[32];
+    snprintf(counted, sizeof(counted), "%d", count);
+    hal_video_draw_text_sjis(ROSTER_X + ROSTER_W - 24 - sjis_width(counted),
+                             ROSTER_Y + 6, counted, 7);
+
+    hal_video_draw_text_sjis(ROSTER_X + 232, ROSTER_Y + 30,
+                             SJIS_LEAD "    " SJIS_WAR "    " SJIS_INTEL, 6);
+    hal_video_draw_rect(ROSTER_X + 10, ROSTER_Y + 48, ROSTER_W - 20, 1, 7);
+
+    for (int r = 0; r < ROSTER_ROWS; r++) {
+        int i = scroll + r;
+        if (i >= count) break;
+        const ScenarioOfficer *o = &sc->officers[ids[i]];
+        int ry = ROSTER_Y + ROSTER_ROWS_TOP + r * ROSTER_ROW_H;
+        uint8_t fg = turn_officer_has_acted(ts, o->id) ? 5 : 7;
+
+        hal_video_draw_text_sjis(ROSTER_X + 14, ry, o->full_name_sjis, fg);
+        char stats[64];
+        snprintf(stats, sizeof(stats), "%3d / %3d / %3d", o->lead, o->war, o->intel);
+        hal_video_draw_text_sjis(ROSTER_X + 232, ry, stats, fg);
+    }
+}
+
+static void draw_dialog_box(const char *text, const char *tag,
+                            const ImageDecoded *portrait) {
+    const int cx = 16;
+    const int cy = portrait ? 200 : 286;
+    const int cw = 608;
+    const int ch = portrait ? 178 : 92;
 
     hal_video_fill_rect(cx, cy, cw, ch, 1);                       // navy panel
     hal_video_draw_rect(cx, cy, cw, ch, 6);                       // gold outer
     hal_video_draw_rect(cx + 2, cy + 2, cw - 4, ch - 4, 7);       // white inner
 
-    draw_wrapped_sjis(cx + 18, cy + 14, cw - 36, 18, text, 7);
+    int tx = cx + 18;
+    int ty = cy + 14;
+    int tw = cw - 36;
 
-    // Small source tag in the bottom-right corner. The PC-98 half-width font
-    // only guarantees upper-case ASCII, so the label uses SJIS full-width
-    // brackets/kanji with an ASCII index.
-    char tag[48];
-    snprintf(tag, sizeof(tag), "\x81\x79\x89\xef\x98\x62\x81\x7a[%d:%04d]", entry, index);
-    hal_video_draw_text_sjis(cx + cw - 190, cy + ch - 20, tag, 6);
+    if (portrait && portrait->pixels) {
+        int px = cx + 8;
+        int py = cy + 9;
+        hal_video_draw_rect(px - 2, py - 2, portrait->width + 4, portrait->height + 4, 6);
+        if (portrait->mask) {
+            hal_video_blit_masked(px, py, portrait->width, portrait->height,
+                                  portrait->pixels, portrait->mask, portrait->width);
+        } else {
+            hal_video_blit_indexed(px, py, portrait->width, portrait->height,
+                                   portrait->pixels, portrait->width);
+        }
+        tx = px + portrait->width + 16;
+        tw = cx + cw - tx - 18;
+    }
+
+    draw_wrapped_sjis(tx, ty, tw, 18, text, 7);
+
+    // Right-aligned source/label tag. The PC-98 half-width font only renders
+    // upper-case ASCII reliably, so labels use SJIS with ASCII indices.
+    if (tag && tag[0]) {
+        int tag_x = cx + cw - 16 - sjis_width(tag);
+        hal_video_draw_text_sjis(tag_x, cy + ch - 20, tag, 6);
+    }
+}
+
+// ASCII command name for headless logs.
+static const char* turn_cmd_ascii(TurnCommand cmd) {
+    switch (cmd) {
+        case TURN_CMD_DEVELOP:  return "DEVELOP";
+        case TURN_CMD_RECRUIT:  return "RECRUIT";
+        case TURN_CMD_TAX:      return "TAX";
+        case TURN_CMD_OFFICERS: return "OFFICERS";
+        case TURN_CMD_END:      return "END";
+        default:                return "NONE";
+    }
 }
 
 int main(int argc, char *argv[]) {
@@ -176,6 +346,21 @@ int main(int argc, char *argv[]) {
     int msg_entry = 0;           // --msg-entry: which LS11 entry to browse
     int test_msg = -1;           // --test-msg: force the dialogue box open
     bool show_dialog = false;    // dialogue box visibility (T toggles)
+
+    // Turn / domestic-affairs state.
+    int faction_override = -1;             // --faction
+    TurnCommand do_cmd = TURN_CMD_NONE;    // --do-cmd
+    int end_turns = 0;                     // --end-turn
+    bool show_cmd_menu = false;            // player-castle command menu
+    bool show_officer_list = false;        // officer roster (modal)
+    bool dlg_custom = false;               // dialogue shows dlg_custom_text
+    char dlg_custom_text[TURN_TEXT_MAX];   // domestic result / roster text
+    int  dlg_officer = -1;                 // portrait to show in the dialogue
+    int  roster_ids[MAX_OFFICERS];
+    int  roster_count = 0;
+    int  roster_scroll = 0;
+    bool roster_select_mode = false;              // roster is choosing an actor
+    TurnCommand roster_cmd = TURN_CMD_NONE;       // command awaiting an officer
 
     const char *env_dir = getenv("YPHZ_DATA_DIR");
     if (env_dir) {
@@ -217,6 +402,21 @@ int main(int argc, char *argv[]) {
         } else if (strcmp(argv[i], "--msg-entry") == 0 && i + 1 < argc) {
             msg_entry = atoi(argv[++i]);
             if (msg_entry < 0) msg_entry = 0;
+        } else if (strcmp(argv[i], "--faction") == 0 && i + 1 < argc) {
+            faction_override = atoi(argv[++i]);
+            if (faction_override < 0) faction_override = 0;
+            if (faction_override > 14) faction_override = 14;
+        } else if (strcmp(argv[i], "--do-cmd") == 0 && i + 1 < argc) {
+            const char *c = argv[++i];
+            if (strcmp(c, "develop") == 0)      do_cmd = TURN_CMD_DEVELOP;
+            else if (strcmp(c, "recruit") == 0) do_cmd = TURN_CMD_RECRUIT;
+            else if (strcmp(c, "tax") == 0)     do_cmd = TURN_CMD_TAX;
+            else if (strcmp(c, "officers") == 0) do_cmd = TURN_CMD_OFFICERS;
+            else if (strcmp(c, "end") == 0)     do_cmd = TURN_CMD_END;
+            else fprintf(stderr, "[WARN] unknown --do-cmd '%s' (develop|recruit|tax|officers|end)\n", c);
+        } else if (strcmp(argv[i], "--end-turn") == 0 && i + 1 < argc) {
+            end_turns = atoi(argv[++i]);
+            if (end_turns < 0) end_turns = 0;
         }
     }
 
@@ -235,6 +435,14 @@ int main(int argc, char *argv[]) {
         start_map_mode = true;
         show_castle_card = false;
         show_dialog = true;
+    }
+
+    // --do-cmd / --end-turn: run domestic commands headlessly and show the
+    // resulting report over the strategic map.
+    if (do_cmd != TURN_CMD_NONE || end_turns > 0) {
+        start_map_mode = true;
+        show_castle_card = true;
+        show_cmd_menu = (do_cmd == TURN_CMD_NONE || do_cmd == TURN_CMD_OFFICERS);
     }
 
     if (!hal_video_init("《源平合戦》 - Linux Native Video Engine (SDL2/PC-98)", 2)) {
@@ -354,9 +562,33 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    // 9. Turn / domestic state (子任务 3)
+    int player_faction;
+    if (faction_override >= 0) {
+        player_faction = faction_override;
+    } else if ((do_cmd != TURN_CMD_NONE || end_turns > 0) &&
+               cur_castle >= 0 && cur_castle < g_scenario.num_castles) {
+        // Headless domestic tests operate on the selected castle's clan.
+        player_faction = g_scenario.castles[cur_castle].faction_id;
+    } else {
+        player_faction = g_scenario.castles[30].faction_id;  // 鎌倉 (源氏)
+    }
+    if (player_faction < 0) player_faction = 0;
+    TurnState g_turn;
+    turn_init(&g_turn, &g_scenario, player_faction);
+    show_cmd_menu = false;
+    if (show_castle_card && cur_castle >= 0 && cur_castle < g_scenario.num_castles) {
+        show_cmd_menu = (g_scenario.castles[cur_castle].faction_id == player_faction);
+    }
+    printf("[+] Turn state: faction %d, %d/%d\n",
+           g_turn.player_faction, g_turn.year, g_turn.month);
+
     // Initial officer decode
     ImageDecoded cur_kao = {0};
     refresh_officer_portrait(cur_officer, &g_scenario, kao_data, kao_size, officer_offsets, &cur_kao);
+
+    // Portrait embedded in domestic-affairs report dialogues.
+    ImageDecoded dlg_kao = {0};
 
     bool running = true;
     bool use_mask = true;
@@ -369,6 +601,58 @@ int main(int argc, char *argv[]) {
     if (camera_x > map_w - PC98_WIDTH) camera_x = map_w - PC98_WIDTH;
 
     int frame_count = 0;
+
+    // --- Headless domestic-command execution (--do-cmd / --end-turn) --------
+    // Runs before the first frame so --screenshot captures the resulting state.
+    if (do_cmd != TURN_CMD_NONE || end_turns > 0) {
+        show_cmd_menu = false;
+
+        if (do_cmd == TURN_CMD_OFFICERS) {
+            roster_count = turn_list_castle_officers(&g_scenario, player_faction,
+                                                     cur_castle, roster_ids, MAX_OFFICERS);
+            roster_scroll = 0;
+            show_officer_list = true;
+            printf("[TURN] roster castle=%d officers=%d\n", cur_castle, roster_count);
+        } else if (do_cmd != TURN_CMD_NONE) {
+            const ScenarioCastle *before = &g_scenario.castles[cur_castle];
+            int rice0 = before->rice, gold0 = before->gold, tr0 = before->troops;
+            int df0 = before->defense, mo0 = before->morale;
+
+            TurnResult r;
+            turn_run_command(&g_turn, &g_scenario, cur_castle, do_cmd, &r);
+
+            const ScenarioCastle *after = &g_scenario.castles[cur_castle];
+            printf("[TURN] %s castle=%d officer=%d ok=%d\n",
+                   turn_cmd_ascii(do_cmd), cur_castle, r.officer_id, r.ok ? 1 : 0);
+            printf("[TURN]   BEFORE rice=%d gold=%d troops=%d def=%d morale=%d\n",
+                   rice0, gold0, tr0, df0, mo0);
+            printf("[TURN]   AFTER  rice=%d gold=%d troops=%d def=%d morale=%d\n",
+                   after->rice, after->gold, after->troops, after->defense, after->morale);
+            printf("[TURN]   DATE   %d/%d\n", g_turn.year, g_turn.month);
+
+            show_dialog = true;
+            dlg_custom = true;
+            dlg_officer = r.officer_id;
+            snprintf(dlg_custom_text, sizeof(dlg_custom_text), "%s", r.text);
+            if (r.officer_id >= 0) {
+                decode_officer_portrait(r.officer_id, &g_scenario, kao_data, kao_size,
+                                        officer_offsets, &dlg_kao);
+            }
+        }
+
+        for (int t = 0; t < end_turns; t++) {
+            TurnResult r;
+            turn_end(&g_turn, &g_scenario, &r);
+            printf("[TURN] END -> %d/%d  player_gold=%+d player_rice=%+d\n",
+                   g_turn.year, g_turn.month, r.d_gold, r.d_rice);
+            if (t == end_turns - 1) {
+                show_dialog = true;
+                dlg_custom = true;
+                dlg_officer = -1;
+                snprintf(dlg_custom_text, sizeof(dlg_custom_text), "%s", r.text);
+            }
+        }
+    }
 
     update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
 
@@ -387,13 +671,39 @@ int main(int argc, char *argv[]) {
 
         const YphzKey key = in.key;
         if (key == YPHZ_KEY_ESCAPE) {
-            // ESC dismisses the dialogue box, then the castle card, then quits.
+            // ESC walks back up the UI stack: dialogue -> officer roster ->
+            // command menu -> castle card -> quit.
             if (show_dialog) {
                 show_dialog = false;
+            } else if (show_officer_list) {
+                show_officer_list = false;
+                roster_select_mode = false;
+                roster_cmd = TURN_CMD_NONE;
+                show_cmd_menu = true;
+            } else if (map_mode && show_cmd_menu &&
+                       g_scenario.castles[cur_castle].faction_id == g_turn.player_faction) {
+                show_cmd_menu = false;
             } else if (map_mode && show_castle_card) {
                 show_castle_card = false;
             } else {
                 running = false;
+            }
+        }
+
+        // Right-click walks back one level, mirroring ESC but never quits.
+        if (in.rbutton_pressed) {
+            if (show_dialog) {
+                show_dialog = false;
+            } else if (show_officer_list) {
+                show_officer_list = false;
+                roster_select_mode = false;
+                roster_cmd = TURN_CMD_NONE;
+                show_cmd_menu = true;
+            } else if (map_mode && show_cmd_menu &&
+                       g_scenario.castles[cur_castle].faction_id == g_turn.player_faction) {
+                show_cmd_menu = false;
+            } else if (map_mode && show_castle_card) {
+                show_castle_card = false;
             }
         }
 
@@ -405,96 +715,232 @@ int main(int argc, char *argv[]) {
         }
 
         if (map_mode) {
-            // Scenario hot-switching: 1, 2, 3, 4
-            if (key >= YPHZ_KEY_1 && key <= YPHZ_KEY_4) {
-                cur_scenario = key - YPHZ_KEY_1;
-                scenario_load(snd_path, cur_scenario, &g_scenario);
-                refresh_officer_portrait(cur_officer, &g_scenario, kao_data, kao_size, officer_offsets, &cur_kao);
-                update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
-            }
-            // Castle selection: [ and ]
-            else if (key == YPHZ_KEY_LEFTBRACKET) {
-                cur_castle = (cur_castle - 1 + MAX_CASTLES) % MAX_CASTLES;
-                camera_x = clamp_camera_x(g_scenario.castles[cur_castle].map_x - 320, map_w);
-                update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
-            } else if (key == YPHZ_KEY_RIGHTBRACKET) {
-                cur_castle = (cur_castle + 1) % MAX_CASTLES;
-                camera_x = clamp_camera_x(g_scenario.castles[cur_castle].map_x - 320, map_w);
-                update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
-            }
-            // Inspect Castle Lord in Officer Mode: O or ENTER
-            else if (key == YPHZ_KEY_O || key == YPHZ_KEY_ENTER) {
-                ScenarioCastle *sel = &g_scenario.castles[cur_castle];
-                if (sel->lord_officer_id >= 0 && sel->lord_officer_id < g_scenario.num_officers) {
-                    cur_officer = sel->lord_officer_id;
-                    map_mode = false;
+            const bool player_castle =
+                (g_scenario.castles[cur_castle].faction_id == g_turn.player_faction);
+            const bool modal_open = show_dialog || show_officer_list ||
+                                    (show_cmd_menu && player_castle);
+
+            if (show_officer_list) {
+                // ---- Officer roster (武将一覧) ----
+                int max_scroll = roster_count - ROSTER_ROWS;
+                if (max_scroll < 0) max_scroll = 0;
+
+                if (key == YPHZ_KEY_UP) {
+                    if (roster_scroll > 0) roster_scroll--;
+                } else if (key == YPHZ_KEY_DOWN) {
+                    if (roster_scroll < max_scroll) roster_scroll++;
+                } else if (in.lbutton_pressed && in.mouse_inside) {
+                    int rows_top = ROSTER_Y + ROSTER_ROWS_TOP;
+                    int row = (in.mouse_y - rows_top) / ROSTER_ROW_H;
+                    if (in.mouse_x >= ROSTER_X && in.mouse_x < ROSTER_X + ROSTER_W &&
+                        in.mouse_y >= rows_top &&
+                        in.mouse_y < rows_top + ROSTER_ROWS * ROSTER_ROW_H &&
+                        row >= 0 && row < ROSTER_ROWS) {
+                        int idx = roster_scroll + row;
+                        if (idx >= 0 && idx < roster_count) {
+                            int oid = roster_ids[idx];
+                            if (roster_select_mode) {
+                                // Choose the officer who will execute the
+                                // pending domestic command.
+                                if (!turn_officer_has_acted(&g_turn, oid)) {
+                                    TurnResult r;
+                                    turn_run_command_officer(&g_turn, &g_scenario,
+                                                             cur_castle, roster_cmd,
+                                                             oid, &r);
+                                    printf("[TURN] %s castle=%d officer=%d ok=%d "
+                                           "gold=%+d rice=%+d troops=%+d morale=%+d def=%+d\n",
+                                           turn_cmd_ascii(roster_cmd), cur_castle,
+                                           r.officer_id, r.ok ? 1 : 0,
+                                           r.d_gold, r.d_rice, r.d_troops,
+                                           r.d_morale, r.d_defense);
+                                    show_turn_result(&r, &show_dialog, &dlg_custom,
+                                                     &dlg_officer, dlg_custom_text,
+                                                     sizeof(dlg_custom_text), &dlg_kao,
+                                                     &g_scenario, kao_data, kao_size,
+                                                     officer_offsets);
+                                    show_officer_list = false;
+                                    roster_select_mode = false;
+                                    roster_cmd = TURN_CMD_NONE;
+                                    update_window_title(cur_officer, use_mask, bg_mode,
+                                                        map_mode, camera_x, cur_scenario,
+                                                        &g_scenario, cur_castle);
+                                }
+                            } else {
+                                const ScenarioOfficer *o = &g_scenario.officers[oid];
+                                dlg_custom = true;
+                                dlg_officer = oid;
+                                snprintf(dlg_custom_text, sizeof(dlg_custom_text),
+                                         "%s\n"
+                                         "\x93\x9d\x97\xa6 %d   \x95\x90\x97\xcd %d   \x92\x6d\x96\x64 %d\n"
+                                         "\x90\xad\x8e\xa1 %d   \x92\x89\x90\xbd %d   \x95\xba\x97\xcd %d",
+                                         o->full_name_sjis,
+                                         o->lead, o->war, o->intel,
+                                         o->politics, o->loyalty, o->troops);
+                                decode_officer_portrait(oid, &g_scenario, kao_data, kao_size,
+                                                        officer_offsets, &dlg_kao);
+                                show_dialog = true;
+                                show_officer_list = false;
+                            }
+                        }
+                    }
+                }
+            } else if (show_dialog) {
+                // Dialogue dismissal is handled centrally by ESC / right-click.
+            } else if (show_cmd_menu && player_castle) {
+                // ---- Castle command menu (指令) ----
+                int sel = -1;
+                if (key >= YPHZ_KEY_1 && key <= YPHZ_KEY_5) {
+                    sel = key - YPHZ_KEY_1;
+                }
+                if (in.lbutton_pressed && in.mouse_inside) {
+                    int h = cmd_menu_hit(in.mouse_x, in.mouse_y);
+                    if (h >= 0) sel = h;
+                }
+
+                if (sel >= 0) {
+                    TurnCommand cmd = (TurnCommand)(TURN_CMD_DEVELOP + sel);
+                    if (cmd == TURN_CMD_OFFICERS) {
+                        // Roster view-only (no action consumed).
+                        roster_count = turn_list_castle_officers(
+                            &g_scenario, player_faction, cur_castle,
+                            roster_ids, MAX_OFFICERS);
+                        roster_scroll = 0;
+                        roster_select_mode = false;
+                        roster_cmd = TURN_CMD_NONE;
+                        show_officer_list = true;
+                        show_cmd_menu = false;
+                    } else if (cmd == TURN_CMD_END) {
+                        TurnResult r;
+                        turn_run_command(&g_turn, &g_scenario, cur_castle, cmd, &r);
+                        printf("[TURN] %s castle=%d ok=%d gold=%+d rice=%+d\n",
+                               turn_cmd_ascii(cmd), cur_castle, r.ok ? 1 : 0,
+                               r.d_gold, r.d_rice);
+                        show_turn_result(&r, &show_dialog, &dlg_custom, &dlg_officer,
+                                         dlg_custom_text, sizeof(dlg_custom_text),
+                                         &dlg_kao, &g_scenario, kao_data, kao_size,
+                                         officer_offsets);
+                        show_cmd_menu = false;
+                        update_window_title(cur_officer, use_mask, bg_mode, map_mode,
+                                            camera_x, cur_scenario, &g_scenario, cur_castle);
+                    } else {
+                        // DEVELOP / RECRUIT / TAX: pick the acting officer first.
+                        roster_count = turn_list_castle_officers(
+                            &g_scenario, player_faction, cur_castle,
+                            roster_ids, MAX_OFFICERS);
+                        roster_scroll = 0;
+                        roster_select_mode = true;
+                        roster_cmd = cmd;
+                        show_officer_list = true;
+                        show_cmd_menu = false;
+                    }
+                }
+            } else {
+                // Scenario hot-switching: 1, 2, 3, 4
+                if (key >= YPHZ_KEY_1 && key <= YPHZ_KEY_4) {
+                    cur_scenario = key - YPHZ_KEY_1;
+                    scenario_load(snd_path, cur_scenario, &g_scenario);
+                    turn_init(&g_turn, &g_scenario, player_faction);
                     refresh_officer_portrait(cur_officer, &g_scenario, kao_data, kao_size, officer_offsets, &cur_kao);
+                    show_cmd_menu = show_castle_card &&
+                        (g_scenario.castles[cur_castle].faction_id == g_turn.player_faction);
+                    update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
+                }
+                // Castle selection: [ and ]
+                else if (key == YPHZ_KEY_LEFTBRACKET) {
+                    cur_castle = (cur_castle - 1 + MAX_CASTLES) % MAX_CASTLES;
+                    camera_x = clamp_camera_x(g_scenario.castles[cur_castle].map_x - 320, map_w);
+                    show_cmd_menu = show_castle_card &&
+                        (g_scenario.castles[cur_castle].faction_id == g_turn.player_faction);
+                    update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
+                } else if (key == YPHZ_KEY_RIGHTBRACKET) {
+                    cur_castle = (cur_castle + 1) % MAX_CASTLES;
+                    camera_x = clamp_camera_x(g_scenario.castles[cur_castle].map_x - 320, map_w);
+                    show_cmd_menu = show_castle_card &&
+                        (g_scenario.castles[cur_castle].faction_id == g_turn.player_faction);
+                    update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
+                }
+                // Inspect Castle Lord in Officer Mode: O or ENTER
+                else if (key == YPHZ_KEY_O || key == YPHZ_KEY_ENTER) {
+                    ScenarioCastle *sel = &g_scenario.castles[cur_castle];
+                    if (sel->lord_officer_id >= 0 && sel->lord_officer_id < g_scenario.num_officers) {
+                        cur_officer = sel->lord_officer_id;
+                        map_mode = false;
+                        show_cmd_menu = false;
+                        show_officer_list = false;
+                        refresh_officer_portrait(cur_officer, &g_scenario, kao_data, kao_size, officer_offsets, &cur_kao);
+                        update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
+                    }
+                }
+                // Toggle Castle Details Card: C or SPACE
+                else if (key == YPHZ_KEY_C || key == YPHZ_KEY_SPACE) {
+                    show_castle_card = !show_castle_card;
+                    show_officer_list = false;
+                    show_cmd_menu = show_castle_card &&
+                        (g_scenario.castles[cur_castle].faction_id == g_turn.player_faction);
+                }
+                // Jump to major strategic headquarters: TAB
+                else if (key == YPHZ_KEY_TAB) {
+                    static const int major_castles[] = {0, 6, 16, 17, 25, 30, 38};
+                    static int m_idx = 0;
+                    m_idx = (m_idx + 1) % 7;
+                    cur_castle = major_castles[m_idx];
+                    camera_x = clamp_camera_x(g_scenario.castles[cur_castle].map_x - 320, map_w);
+                    show_cmd_menu = show_castle_card &&
+                        (g_scenario.castles[cur_castle].faction_id == g_turn.player_faction);
+                    update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
+                }
+                // Message.gp dialogue box: T opens it, further presses advance
+                else if (key == YPHZ_KEY_T) {
+                    int n = message_string_count(&g_messages, msg_entry);
+                    if (!show_dialog) {
+                        show_dialog = true;
+                    } else if (n > 0) {
+                        cur_msg = (cur_msg + 1) % n;
+                    }
+                }
+                // Smooth manual camera scroll (keyboard)
+                else if (key == YPHZ_KEY_LEFT || key == YPHZ_KEY_A) {
+                    camera_x = clamp_camera_x(camera_x - 40, map_w);
+                    update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
+                } else if (key == YPHZ_KEY_RIGHT || key == YPHZ_KEY_D) {
+                    camera_x = clamp_camera_x(camera_x + 40, map_w);
                     update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
                 }
             }
-            // Toggle Castle Details Card: C or SPACE
-            else if (key == YPHZ_KEY_C || key == YPHZ_KEY_SPACE) {
-                show_castle_card = !show_castle_card;
-            }
-            // Jump to major strategic headquarters: TAB
-            else if (key == YPHZ_KEY_TAB) {
-                static const int major_castles[] = {0, 6, 16, 17, 25, 30, 38};
-                static int m_idx = 0;
-                m_idx = (m_idx + 1) % 7;
-                cur_castle = major_castles[m_idx];
-                camera_x = clamp_camera_x(g_scenario.castles[cur_castle].map_x - 320, map_w);
-                update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
-            }
-            // Message.gp dialogue box: T opens it, further presses advance
-            else if (key == YPHZ_KEY_T) {
-                int n = message_string_count(&g_messages, msg_entry);
-                if (!show_dialog) {
-                    show_dialog = true;
-                } else if (n > 0) {
-                    cur_msg = (cur_msg + 1) % n;
-                }
-            }
-            // Smooth manual camera scroll (keyboard)
-            else if (key == YPHZ_KEY_LEFT || key == YPHZ_KEY_A) {
-                camera_x = clamp_camera_x(camera_x - 40, map_w);
-                update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
-            } else if (key == YPHZ_KEY_RIGHT || key == YPHZ_KEY_D) {
-                camera_x = clamp_camera_x(camera_x + 40, map_w);
-                update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
-            }
 
-            // --- Mouse: edge auto-scroll ---
-            if (in.mouse_inside) {
-                if (in.mouse_x < EDGE_SCROLL_MARGIN) {
-                    camera_x = clamp_camera_x(camera_x - EDGE_SCROLL_STEP, map_w);
-                } else if (in.mouse_x >= PC98_WIDTH - EDGE_SCROLL_MARGIN) {
-                    camera_x = clamp_camera_x(camera_x + EDGE_SCROLL_STEP, map_w);
+            // Map mouse interaction is disabled while a modal panel is up.
+            if (!modal_open) {
+                // --- Mouse: edge auto-scroll ---
+                if (in.mouse_inside) {
+                    if (in.mouse_x < EDGE_SCROLL_MARGIN) {
+                        camera_x = clamp_camera_x(camera_x - EDGE_SCROLL_STEP, map_w);
+                    } else if (in.mouse_x >= PC98_WIDTH - EDGE_SCROLL_MARGIN) {
+                        camera_x = clamp_camera_x(camera_x + EDGE_SCROLL_STEP, map_w);
+                    }
                 }
-            }
 
-            // --- Mouse: click a castle to select it; empty space starts a drag ---
-            if (in.lbutton_pressed) {
-                int hit = in.mouse_inside
-                              ? map_castle_hit_test(&g_scenario, camera_x, in.mouse_x, in.mouse_y)
-                              : -1;
-                if (hit >= 0) {
-                    cur_castle = hit;
-                    show_castle_card = true;
-                    update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
-                } else {
-                    dragging = true;
+                // --- Mouse: click a castle to select it; empty space starts a drag ---
+                if (in.lbutton_pressed) {
+                    int hit = in.mouse_inside
+                                  ? map_castle_hit_test(&g_scenario, camera_x, in.mouse_x, in.mouse_y)
+                                  : -1;
+                    if (hit >= 0) {
+                        cur_castle = hit;
+                        show_castle_card = true;
+                        show_officer_list = false;
+                        show_cmd_menu =
+                            (g_scenario.castles[cur_castle].faction_id == g_turn.player_faction);
+                        update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
+                    } else {
+                        dragging = true;
+                    }
                 }
-            }
-            if (!in.lbutton_down) {
-                dragging = false;
-            } else if (dragging) {
-                // Drag pans the panorama: the terrain follows the pointer.
-                camera_x = clamp_camera_x(camera_x - in.mouse_dx, map_w);
-            }
-
-            // --- Mouse: right click dismisses the castle card ---
-            if (in.rbutton_pressed) {
-                show_castle_card = false;
+                if (!in.lbutton_down) {
+                    dragging = false;
+                } else if (dragging) {
+                    // Drag pans the panorama: the terrain follows the pointer.
+                    camera_x = clamp_camera_x(camera_x - in.mouse_dx, map_w);
+                }
             }
         } else {
             // Officer Showcase Controls: Full 401 Officer Database
@@ -586,6 +1032,11 @@ int main(int argc, char *argv[]) {
             if (g_scenario.title_sjis) {
                 hal_video_draw_text_sjis(16, 2, g_scenario.title_sjis, 7);
             }
+            // Current calendar (kept in sync by turn_end()).
+            char date_str[64];
+            snprintf(date_str, sizeof(date_str), "%d\x94\x4e%d\x8c\x8e",
+                     g_turn.year, g_turn.month);
+            hal_video_draw_text_sjis(320, 2, date_str, 6);
             hal_video_draw_text_sjis(400, 2, "\x81\x6d\x31\x2d\x34\x3a\x8c\x80\x96\x7b\x20\x43\x3a\x8f\xda\x8f\xee\x20\x81\x6d\x81\x6e\x3a\x8a\xb7\x8f\xe9\x20\x4d\x3a\x95\x90\x8f\xab\x81\x6e", 6); // ［1-4:劇本 C:詳情 ［］:換城 M:武将］
 
             // Bottom Status Bar
@@ -604,9 +1055,10 @@ int main(int argc, char *argv[]) {
 
             // Castle Detail Card Modal Overlay
             if (show_castle_card) {
-                int cx = 70;
+                bool card_player = (sel->faction_id == g_turn.player_faction);
+                int cx = card_player ? 52 : 70;
                 int cy = 40;
-                int cw = 500;
+                int cw = card_player ? 436 : 500;
                 int ch = 310;
                 hal_video_fill_rect(cx, cy, cw, ch, 1);      // Navy background
                 hal_video_draw_rect(cx, cy, cw, ch, 6);      // Gold outer
@@ -684,9 +1136,30 @@ int main(int argc, char *argv[]) {
                 }
 
                 // Footer hint
-                hal_video_draw_text_sjis(cx + 16, cy + 276,
-                    "\x81\x6d\x88\xc2\x20\x43\x20\x8c\xae\x95\xc2\x20\x20\x20\x81\x6d\x20\x81\x6e\x90\xd8\x91\xd6\x8f\xe9\x92\x72\x20\x20\x20\x31\x2d\x34\x90\xd8\x91\xd6\x8c\x80\x96\x7b\x81\x6e",
-                    6); // ［按 C 鍵閉   ［ ］切替城池   1-4切替劇本］
+                if (card_player) {
+                    hal_video_draw_text_sjis(cx + 16, cy + 276,
+                        "\x81\x6d\x31\x2d\x35\x81\x46\x8e\x77\x97\xdf\x20\x20\x45\x53\x43\x81\x46\x96\xdf\x82\xe9\x81\x6e",
+                        6); // ［1-5:指令  ESC:戻る］
+                } else {
+                    hal_video_draw_text_sjis(cx + 16, cy + 276,
+                        "\x81\x6d\x88\xc2\x20\x43\x20\x8c\xae\x95\xc2\x20\x20\x20\x81\x6d\x20\x81\x6e\x90\xd8\x91\xd6\x8f\xe9\x92\x72\x20\x20\x20\x31\x2d\x34\x90\xd8\x91\xd6\x8c\x80\x96\x7b\x81\x6e",
+                        6); // ［按 C 鍵閉   ［ ］切替城池   1-4切替劇本］
+                }
+
+                // Command menu beside the card (player-owned castles only).
+                if (card_player && show_cmd_menu) {
+                    int hover = in.mouse_inside
+                                    ? cmd_menu_hit(in.mouse_x, in.mouse_y) : -1;
+                    draw_command_menu(hover);
+                }
+            }
+
+            // Officer roster modal overlays the card.
+            if (show_officer_list) {
+                draw_officer_roster(&g_scenario, &g_turn, roster_ids,
+                                    roster_count, roster_scroll,
+                                    roster_select_mode ? turn_command_name(roster_cmd)
+                                                       : SJIS_ROSTER);
             }
 
         } else {
@@ -840,10 +1313,28 @@ int main(int argc, char *argv[]) {
         }
 
         // Dialogue box overlays both modes (drawn last so it sits on top).
-        if (show_dialog && g_messages.loaded) {
-            char dlg[1024];
-            message_get_text(&g_messages, msg_entry, cur_msg, dlg, sizeof(dlg));
-            draw_dialog_box(dlg, msg_entry, cur_msg);
+        if (show_dialog) {
+            char tag[64];
+            const char *text = NULL;
+            const ImageDecoded *portrait = NULL;
+
+            if (dlg_custom) {
+                text = dlg_custom_text;
+                snprintf(tag, sizeof(tag), "\x81\x79\x8c\x8b\x89\xca\x81\x7a"); // 【結果】
+                if (dlg_officer >= 0 && dlg_kao.pixels) {
+                    portrait = &dlg_kao;
+                }
+            } else if (g_messages.loaded) {
+                char dlg[1024];
+                message_get_text(&g_messages, msg_entry, cur_msg, dlg, sizeof(dlg));
+                text = dlg;
+                snprintf(tag, sizeof(tag),
+                         "\x81\x79\x89\xef\x98\x62\x81\x7a[%d:%04d]", msg_entry, cur_msg);
+            }
+
+            if (text) {
+                draw_dialog_box(text, tag, portrait);
+            }
         }
 
         hal_video_present();
@@ -862,6 +1353,7 @@ int main(int argc, char *argv[]) {
     }
 
     free_decoded_image(&cur_kao);
+    free_decoded_image(&dlg_kao);
     if (bg_hik.pixels) free_decoded_image(&bg_hik);
     if (bg_palace.pixels) free_decoded_image(&bg_palace);
     if (japan_map_pixels) free(japan_map_pixels);
