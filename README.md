@@ -54,13 +54,15 @@ SDL_VIDEODRIVER=dummy ./bin/yphz_engine --frames 5 --screenshot /tmp/shot.bmp
 │   ├── decompress.h        #   解压器 API + ImageDecoded
 │   ├── hal_video.h         #   视频/字体 HAL API + ColorRGBA
 │   ├── input.h             #   统一输入层 API（InputState / YphzKey）
+│   ├── message.h           #   Message.gp（LS11 文本）API
 │   ├── scenario.h          #   剧本数据结构（武将/城池/势力）
 │   └── sdl_compat.h        #   SDL2/SDL3 唯一引入点
 ├── src/                    # 引擎源码（C11）
 │   ├── main.c              #   入口：CLI、资源装载、双模式渲染主循环
 │   ├── hal_video.c         #   SDL2 视频/软件帧缓冲/调色板/JIS 字体
 │   ├── input.c             #   统一输入层（SDL 键盘/鼠标事件 → InputState）
-│   ├── decompress.c        #   NPK016/NUP4 与 Kaodata 0x728 解压器
+│   ├── decompress.c        #   NPK016/NUP4、Kaodata 0x728、LS11 解压器
+│   ├── message.c           #   Message.gp（LS11 容器 + 字符串表 + 显示清洗）
 │   └── scenario.c          #   Sndata.gp 剧本解析 + 静态历史数据表
 ├── tools/extractor/        # Python 逆向工具（Pillow）
 │   ├── extract_images.py   #   NPK016/NUP4 图像批量解包
@@ -130,6 +132,8 @@ cmake --build build -j
 | `--castle <n>` | `-c` | `30` | 起始城池编号（0..38，默认鎌倉） |
 | `--select-castle <n>` | — | — | 直接以地图模式启动，选中第 n 城并展开其情报卡（配合 `--frames`/`--screenshot` 做无头截屏回归） |
 | `--map` | `-m` | 关 | 直接以战略地图模式启动 |
+| `--test-msg <n>` | — | — | 在战略地图上弹出 `Message.gp` 第 n 条台词对话框（配合 `--screenshot` 无头验证） |
+| `--msg-entry <n>` | — | `0` | `--test-msg` 使用的 LS11 条目编号（Message.gp 共 5 条） |
 | `--frames <n>` | — | `0` | 运行 n 帧后自动退出（`0` = 无限，用于回归/无头测试） |
 | `--screenshot <path>` | — | — | 第 2 帧导出 640x400 BMP 并退出（隐含 `--frames 10`） |
 
@@ -137,6 +141,7 @@ cmake --build build -j
 
 ```bash
 SDL_VIDEODRIVER=dummy ./bin/yphz_engine --select-castle 30 --frames 5 --screenshot /tmp/c30.bmp
+SDL_VIDEODRIVER=dummy ./bin/yphz_engine --test-msg 1 --frames 5 --screenshot /tmp/msg.bmp
 ```
 
 ### 键盘操作
@@ -144,11 +149,12 @@ SDL_VIDEODRIVER=dummy ./bin/yphz_engine --select-castle 30 --frames 5 --screensh
 | 模式 | 按键 | 功能 |
 |---|---|---|
 | 通用 | `M` | 战略地图 ⇄ 武将立绘 切换 |
-| 通用 | `ESC` | 地图：关闭城池情报卡；无卡时（或武将模式）退出 |
+| 通用 | `ESC` | 依次关闭：台词对话框 → 城池情报卡 → 无则退出 |
 | 地图 | `1`–`4` | 切换剧本 |
 | 地图 | `[` / `]` | 上一 / 下一城池 |
 | 地图 | `O` / `Enter` | 查看当前城城主（跳转立绘） |
 | 地图 | `C` / `Space` | 开/关城池情报卡 |
+| 地图 | `T` | 打开 `Message.gp` 台词对话框（再按翻到下一句） |
 | 地图 | `TAB` | 在主要据点间跳转 |
 | 地图 | `←`/`→`（或 `A`/`D`） | 地图水平平移 |
 | 武将 | `←`/`→` | 上/下一名武将 |
@@ -191,7 +197,7 @@ python3 tools/extractor/extract_palette.py   # Mainpal/Losepal -> extracted_asse
 
 ### 一、源码文件职责与已实现功能
 
-**`src/main.c`（760 行）— 入口与渲染主循环**
+**`src/main.c`（879 行）— 入口与渲染主循环**
 - CLI 参数解析（见上表）+ `YPHZ_DATA_DIR` 环境变量。
 - 资源装载 `load_file()`：`Mainpal.pld`、`JIS.FNT`/`FONT.CHR`、`Main.exe`（读
   `0x4D3BB` 处 90 个立绘偏移表）、`Kaodata.gp`、`Hikback.gp`、`Maincmd2.gp`、
@@ -207,6 +213,8 @@ python3 tools/extractor/extract_palette.py   # Mainpal/Losepal -> extracted_asse
   面板（姓名/假名/年龄/忠节/兵力/武力/知才/优雅/弓術/兵質/身份/势力/居城）、
   16 色调色板色块。
 - 截图导出（阶段帧 BMP）、固定 ~60 FPS 主循环。
+- **台词对话框**：`Message.gp` 文本经 SJIS 半/全角软换行，绘制于画面底部（光荣
+  风格金/白描边深蓝窗），角标显示 `【会話】[entry:index]`。
 
 **`src/hal_video.c`（377 行）— 视频 / 字体 HAL**
 - SDL2 窗口/渲染器/纹理初始化（640x400 逻辑分辨率，nearest 缩放，加速失败回退软件）。
@@ -230,13 +238,23 @@ python3 tools/extractor/extract_palette.py   # Mainpal/Losepal -> extracted_asse
 - `mouse_inside` 同时要求窗口具有鼠标焦点，避免无头（`SDL_VIDEODRIVER=dummy`）时
   指针停在 (0,0) 误触发边缘卷动。
 
-**`src/decompress.c`（301 行）— 解压器**
+**`src/decompress.c`（411 行）— 解压器**
 - **NPK016 / NUP4**（`nup4_decompress_block`）：LSB-first 位流 + 1600B（5 扫描行）
   环形缓冲滑窗 LZ、`0x258c` 平面 nibble 打包模拟、`0x0GRB` 12-bit 调色板读取、
   planar → 8-bit indexed 转换。
 - **Kaodata 0x728**（`kaodata_decompress_officer`）：双块解压（A=图像 128x160，
   B=1-bit 遮罩），三种控制码（A：常量 RLE；B：水平拷贝；C：垂直拷贝），
   3-bitplane → 8 色像素 + 遮罩。
+- **LS11**（`ls11_decompress_stream`）：MSB-first 位流（一元 1 计数 + 定长段），
+  `v<256` 直出字典字节，否则 `(v-256)` 距离 + `value+3` 长度的 LZ 回引。与
+  `tools/extractor/extract_text.py` **逐字节一致**（含回引可越过 `dlen` 的行为）。
+
+**`src/message.c`（205 行）— Message.gp 文本**
+- LS11 容器解析：`"LS11"` 头、`0x10` 处 256 字节字典、`0x110` 起 12 字节大端记录
+  （`clen`/`dlen`/`off`）。
+- 每条记录调用 `ls11_decompress_stream()`，再解析字符串偏移表（uint16 LE）。
+- `message_get_text()`：按 Python 参考把 `0x05` → `" [WAIT] "`、`0x0A` → `'\n'`，
+  并裁剪首尾 NUL/空白，输出可直接交给 SJIS 渲染器的显示串。
 
 **`src/scenario.c`（193 行）— 剧本数据**
 - 静态历史表：39 城地图坐标、15 势力（名称/旗号/旗色，SJIS）、8 道/地方名、
@@ -246,8 +264,9 @@ python3 tools/extractor/extract_palette.py   # Mainpal/Losepal -> extracted_asse
   城池连接关系（`conns[]`）、势力/居城归属。
 
 **`include/`**：`scenario.h`（`FactionDef`/`ScenarioOfficer`/`ScenarioCastle`/
-`Scenario`）、`decompress.h`（`ImageDecoded`）、`hal_video.h`（`ColorRGBA` + HAL/字体
-API）、`input.h`（`YphzKey`/`InputState`）、`sdl_compat.h`（SDL2/SDL3 引入切换）。
+`Scenario`）、`decompress.h`（`ImageDecoded` + `ls11_decompress_stream`）、
+`hal_video.h`（`ColorRGBA` + HAL/字体 API）、`input.h`（`YphzKey`/`InputState`）、
+`message.h`（`MessageFile`/`MessageEntry`）、`sdl_compat.h`（SDL2/SDL3 引入切换）。
 所有结构体 `#pragma pack(push,1)`。
 
 **`tools/extractor/`（Python 参考实现）**
@@ -270,6 +289,7 @@ API）、`input.h`（`YphzKey`/`InputState`）、`sdl_compat.h`（SDL2/SDL3 引�
 - 武将立绘：90 专属立绘 + 通用立绘展示与属性面板。
 - 城池情报卡、BMP 截图、CMake 构建（内置 SDL2）。
 - 统一输入层：键盘（`YphzKey`）+ 鼠标（点击选城 / 拖拽 / 边缘卷动 / 右键关闭情报卡）。
+- LS11 文本解压（`Message.gp`，C 实现，与 Python 逐字节一致）+ 底部光荣风格台词对话框。
 
 ### 三、尚未实现 / TODO ⛔
 
@@ -281,11 +301,11 @@ API）、`input.h`（`YphzKey`/`InputState`）、`sdl_compat.h`（SDL2/SDL3 引�
 | **势力 AI** | 未实现 |
 | **存档** | `Savedata.gp` 未解析/未写入 |
 | **音频** | **完全未实现**：`Music.gp`/`Opmusic.gp`/`Edmusic.gp` 未解析，FM 驱动 `Fmdrv.com` 未逆向，无 MIDI/音效 |
-| **游戏内文本** | C 引擎未加载 `Message.gp` 对话；`Mainevt.gp` 仅解出图像，无事件脚本逻辑 |
+| **游戏内文本** | ✅ C 引擎已加载 `Message.gp`（LS11，5 条 / 2350 句）并在底部弹框显示；`Mainevt.gp` 事件脚本逻辑仍未逆向 |
 | **未解析的数据文件** | `Maincmd.gp`（菜单图，仅作背景）、`Mainobj.gp`、`Mainitem.gp`（道具）、`Kisetsu.gp`、`Montage.gp`、`Opendat.gp`、`Enddat.gp`、`Disk-*.gp`、NPC 立绘（64x80 通用）等 |
 | **未逆向的程序** | `Main.exe`/`Genpei.com`/`Open.exe`/`End.exe` 的主循环、菜单、合战逻辑 |
 
-### 四、接下来可直接在 2200G 上推进的 3 个子任务
+### 四、2200G 上的 3 个子任务（1、2 已完成，3 待办）
 
 > 说明：当前全部渲染为软件 blit（640x400），2200G（Ryzen 3 2200G + Vega 8）完全
 > 够用；以下均不涉及重 GPU/着色器开发，先打通**逻辑层**。
@@ -301,12 +321,16 @@ API）、`input.h`（`YphzKey`/`InputState`）、`sdl_compat.h`（SDL2/SDL3 引�
   --screenshot /tmp/c30.bmp` 得到选中鎌倉（源氏/白旗）情报卡；切换 16 得福原
   （平氏/赤旗）；键盘行为不回归，`-Wall -Wextra` 零警告。
 
-**子任务 2 — 把 `Message.gp`（LS11）与事件文本接入 C 引擎**
-- 将 `extract_text.py` 的 LS11 解压移植为 C，加入 `decompress.c`/`decompress.h`
-  （如 `ls11_decompress_stream()`）。
-- 用已跑通的 SJIS 字体渲染器，在地图上弹框显示城池/武将台词与事件文本。
-- 验收：地图模式下按某键弹出当前城的对话/事件文本（cp932 → 字形正确渲染）。
-- 理由：文本解压与字体渲染两条链都已单独跑通，只差把它们接起来，产出立即可见。
+**子任务 2 — 把 `Message.gp`（LS11）与事件文本接入 C 引擎 — ✅ 已完成**
+- 将 `extract_text.py` 的 LS11 解压移植为 C：`decompress.h`/`decompress.c` 的
+  `ls11_decompress_stream()`。**逐字节验证**：`Message.gp` 5 条记录的解压输出与
+  Python `entry_*.bin` 完全一致，2350 句文本（cp932→UTF-8 后）与 Python `.txt` 完全一致。
+- 新增 `include/message.h` / `src/message.c`：加载并解压 `Message.gp` 全部条目，
+  解析字符串表，`message_get_text()` 输出可直接渲染的 SJIS 显示串。
+- 复用现有 JIS 渲染器，绘制底部光荣风格对话框（半/全角软换行）。
+- 新增 `--test-msg <n>`（配 `--msg-entry`）与地图内 `T` 键，无头截图可直接验证。
+- 验收：`SDL_VIDEODRIVER=dummy ./bin/yphz_engine --test-msg 1 --frames 5
+  --screenshot /tmp/msg.bmp` 得到正确台词框；`-Wall -Wextra` 零警告。
 
 **子任务 3 — 回合推进 + 最小内政闭环**
 - 基于 `Scenario`（已有 `year`/`month` 与城池 `rice`/`gold`/`troops`/`morale`/

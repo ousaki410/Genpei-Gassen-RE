@@ -7,6 +7,7 @@
 #include "hal_video.h"
 #include "input.h"
 #include "decompress.h"
+#include "message.h"
 #include "scenario.h"
 
 static char s_asset_dir[256] = "games/yphz";
@@ -46,7 +47,7 @@ static void update_window_title(int cur_officer, bool use_mask, int bg_mode, boo
     if (map_mode) {
         const char *c_name = (sc && cur_castle >= 0 && cur_castle < sc->num_castles) ? sc->castles[cur_castle].name_sjis : "";
         snprintf(title, sizeof(title),
-                 "《源平合战》[剧本%d] 选城:%s | 视口X:%04d/1056 | 左右:平移 ［］:换城 1-4:换剧本 C:详情 M:武将 O:查看城主",
+                 "《源平合战》[剧本%d] 选城:%s | 视口X:%04d/1056 | 左右:平移 ［］:换城 1-4:换剧本 C:详情 T:会话 M:武将 O:查看城主",
                  scenario_idx + 1, c_name, camera_x);
     } else {
         const char *bg_names[] = {"纯黑展台", "军议大殿(640x400)", "野战军营(288x176)"};
@@ -96,6 +97,71 @@ static int map_castle_hit_test(const Scenario *sc, int camera_x, int mouse_x, in
     return -1;
 }
 
+// ---------------------------------------------------------------------------
+// Koei-style dialogue box
+// ---------------------------------------------------------------------------
+
+// Draw a Shift-JIS string with soft wrapping at max_w (full-width glyphs are
+// 16px, half-width 8px). Explicit '\n' always breaks the line.
+static void draw_wrapped_sjis(int x, int y, int max_w, int line_h,
+                              const char *sjis, uint8_t color_idx) {
+    if (!sjis) return;
+    const uint8_t *p = (const uint8_t*)sjis;
+    char line[512];
+    int li = 0;
+    int lw = 0;
+    int cy = y;
+
+    while (*p) {
+        uint8_t c = *p;
+        if (c == '\n') {
+            line[li] = '\0';
+            if (li > 0) hal_video_draw_text_sjis(x, cy, line, color_idx);
+            cy += line_h; li = 0; lw = 0; p++;
+            continue;
+        }
+
+        int is_full = ((c >= 0x81 && c <= 0x9F) || (c >= 0xE0 && c <= 0xFC));
+        int byte_count = (is_full && p[1]) ? 2 : 1;
+        int adv = is_full ? 16 : 8;
+
+        if (lw + adv > max_w && li > 0) {
+            line[li] = '\0';
+            hal_video_draw_text_sjis(x, cy, line, color_idx);
+            cy += line_h; li = 0; lw = 0;
+        }
+        if (li + byte_count < (int)sizeof(line)) {
+            line[li++] = (char)c;
+            if (byte_count == 2) line[li++] = (char)p[1];
+        }
+        lw += adv;
+        p += byte_count;
+    }
+
+    if (li > 0) {
+        line[li] = '\0';
+        hal_video_draw_text_sjis(x, cy, line, color_idx);
+    }
+}
+
+// Classic Koei dialogue window anchored to the bottom of the screen.
+static void draw_dialog_box(const char *text, int entry, int index) {
+    const int cx = 16, cy = 286, cw = 608, ch = 92;
+
+    hal_video_fill_rect(cx, cy, cw, ch, 1);                       // navy panel
+    hal_video_draw_rect(cx, cy, cw, ch, 6);                       // gold outer
+    hal_video_draw_rect(cx + 2, cy + 2, cw - 4, ch - 4, 7);       // white inner
+
+    draw_wrapped_sjis(cx + 18, cy + 14, cw - 36, 18, text, 7);
+
+    // Small source tag in the bottom-right corner. The PC-98 half-width font
+    // only guarantees upper-case ASCII, so the label uses SJIS full-width
+    // brackets/kanji with an ASCII index.
+    char tag[48];
+    snprintf(tag, sizeof(tag), "\x81\x79\x89\xef\x98\x62\x81\x7a[%d:%04d]", entry, index);
+    hal_video_draw_text_sjis(cx + cw - 190, cy + ch - 20, tag, 6);
+}
+
 int main(int argc, char *argv[]) {
     const char *screenshot_path = NULL;
     int max_frames = 0;
@@ -104,6 +170,12 @@ int main(int argc, char *argv[]) {
     int cur_castle = 30;  // Default to Kamakura (Castle 30)
     bool show_castle_card = true;
     bool select_castle_mode = false;  // --select-castle: headless-friendly selection
+
+    // Message.gp dialogue (LS11) state.
+    int cur_msg = 0;             // current string index within msg_entry
+    int msg_entry = 0;           // --msg-entry: which LS11 entry to browse
+    int test_msg = -1;           // --test-msg: force the dialogue box open
+    bool show_dialog = false;    // dialogue box visibility (T toggles)
 
     const char *env_dir = getenv("YPHZ_DATA_DIR");
     if (env_dir) {
@@ -139,6 +211,12 @@ int main(int argc, char *argv[]) {
             if (cur_castle < 0) cur_castle = 0;
             if (cur_castle >= MAX_CASTLES) cur_castle = MAX_CASTLES - 1;
             select_castle_mode = true;
+        } else if (strcmp(argv[i], "--test-msg") == 0 && i + 1 < argc) {
+            test_msg = atoi(argv[++i]);
+            if (test_msg < 0) test_msg = 0;
+        } else if (strcmp(argv[i], "--msg-entry") == 0 && i + 1 < argc) {
+            msg_entry = atoi(argv[++i]);
+            if (msg_entry < 0) msg_entry = 0;
         }
     }
 
@@ -148,6 +226,15 @@ int main(int argc, char *argv[]) {
     if (select_castle_mode) {
         start_map_mode = true;
         show_castle_card = true;
+    }
+
+    // --test-msg renders the dialogue box over the strategic map with the
+    // requested Message.gp string, for headless screenshot verification.
+    if (test_msg >= 0) {
+        cur_msg = test_msg;
+        start_map_mode = true;
+        show_castle_card = false;
+        show_dialog = true;
     }
 
     if (!hal_video_init("《源平合戦》 - Linux Native Video Engine (SDL2/PC-98)", 2)) {
@@ -253,6 +340,20 @@ int main(int argc, char *argv[]) {
         scenario_load("Sndata.gp", cur_scenario, &g_scenario);
     }
 
+    // 8. Load Message.gp dialogue (LS11 text container)
+    MessageFile g_messages = {0};
+    {
+        char msg_path[512];
+        snprintf(msg_path, sizeof(msg_path), "%s/Message.gp", s_asset_dir);
+        if (!message_load(msg_path, &g_messages)) {
+            message_load("Message.gp", &g_messages);
+        }
+        if (g_messages.loaded) {
+            printf("[+] Loaded Message.gp: %d LS11 entries (%d strings in entry %d)\n",
+                   g_messages.num_entries, message_string_count(&g_messages, 0), 0);
+        }
+    }
+
     // Initial officer decode
     ImageDecoded cur_kao = {0};
     refresh_officer_portrait(cur_officer, &g_scenario, kao_data, kao_size, officer_offsets, &cur_kao);
@@ -268,7 +369,6 @@ int main(int argc, char *argv[]) {
     if (camera_x > map_w - PC98_WIDTH) camera_x = map_w - PC98_WIDTH;
 
     int frame_count = 0;
-    show_castle_card = true;
 
     update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
 
@@ -287,8 +387,10 @@ int main(int argc, char *argv[]) {
 
         const YphzKey key = in.key;
         if (key == YPHZ_KEY_ESCAPE) {
-            // ESC dismisses the castle card first; a second ESC quits.
-            if (map_mode && show_castle_card) {
+            // ESC dismisses the dialogue box, then the castle card, then quits.
+            if (show_dialog) {
+                show_dialog = false;
+            } else if (map_mode && show_castle_card) {
                 show_castle_card = false;
             } else {
                 running = false;
@@ -342,6 +444,15 @@ int main(int argc, char *argv[]) {
                 cur_castle = major_castles[m_idx];
                 camera_x = clamp_camera_x(g_scenario.castles[cur_castle].map_x - 320, map_w);
                 update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
+            }
+            // Message.gp dialogue box: T opens it, further presses advance
+            else if (key == YPHZ_KEY_T) {
+                int n = message_string_count(&g_messages, msg_entry);
+                if (!show_dialog) {
+                    show_dialog = true;
+                } else if (n > 0) {
+                    cur_msg = (cur_msg + 1) % n;
+                }
             }
             // Smooth manual camera scroll (keyboard)
             else if (key == YPHZ_KEY_LEFT || key == YPHZ_KEY_A) {
@@ -728,6 +839,13 @@ int main(int argc, char *argv[]) {
             hal_video_draw_text_sjis(16, 382, bot_status, 7);
         }
 
+        // Dialogue box overlays both modes (drawn last so it sits on top).
+        if (show_dialog && g_messages.loaded) {
+            char dlg[1024];
+            message_get_text(&g_messages, msg_entry, cur_msg, dlg, sizeof(dlg));
+            draw_dialog_box(dlg, msg_entry, cur_msg);
+        }
+
         hal_video_present();
 
         if (screenshot_path && frame_count == 2) {
@@ -753,6 +871,7 @@ int main(int argc, char *argv[]) {
     if (exe_data) free(exe_data);
     if (kao_data) free(kao_data);
     if (map_file_data) free(map_file_data);
+    message_free(&g_messages);
 
     hal_video_shutdown();
     printf("[+] Engine cleanly stopped.\n");

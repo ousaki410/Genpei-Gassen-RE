@@ -33,6 +33,7 @@ typedef enum {
     YPHZ_KEY_F,
     YPHZ_KEY_M,
     YPHZ_KEY_O,
+    YPHZ_KEY_T,
     YPHZ_KEY_LEFTBRACKET,
     YPHZ_KEY_RIGHTBRACKET,
     /* The scenario hot-keys are kept contiguous so that

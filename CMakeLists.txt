@@ -136,6 +136,7 @@ add_executable(yphz_engine
     src/hal_video.c
     src/input.c
     src/decompress.c
+    src/message.c
     src/scenario.c)
 
 target_include_directories(yphz_engine PRIVATE

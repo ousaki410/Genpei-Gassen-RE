@@ -299,3 +299,113 @@ bool kaodata_decompress_officer(const uint8_t *kaodata, size_t data_len, uint32_
     out_img->mask = mask;
     return true;
 }
+
+// ---------------------------------------------------------------------------
+// KOEI LS11 decompressor (Message.gp dialogue streams)
+//
+// Reference: tools/extractor/extract_text.py. This is a straight port of
+// decompress_ls11_stream()/BitReader, and is intended to be byte-identical.
+// ---------------------------------------------------------------------------
+#define LS11_MAX_OUTPUT (64u * 1024u * 1024u)
+
+typedef struct {
+    const uint8_t *data;
+    size_t         len;   // in bytes
+    size_t         pos;   // bit position
+} Ls11BitReader;
+
+// Read one MSB-first bit. Returns false when the bitstream is exhausted, which
+// matches the Python BitReader raising EOFError.
+static bool ls11_bit(Ls11BitReader *br, int *out) {
+    if (br->pos >= br->len * 8) return false;
+    *out = (br->data[br->pos >> 3] >> (7 - (br->pos & 7))) & 1;
+    br->pos++;
+    return true;
+}
+
+// Read a "value": unary count of leading 1 bits, then (ones + 1) raw bits.
+static bool ls11_value(Ls11BitReader *br, uint32_t *out) {
+    uint32_t ones = 0;
+    int bit;
+
+    while (1) {
+        if (!ls11_bit(br, &bit)) return false;
+        if (!bit) break;
+        ones++;
+        if (ones >= 31) return false;  // guard vs. (1u << ones) UB
+    }
+
+    uint32_t seg2 = 0;
+    for (uint32_t i = 0; i < ones + 1; i++) {
+        if (!ls11_bit(br, &bit)) return false;
+        seg2 = (seg2 << 1) | (uint32_t)bit;
+    }
+
+    *out = (((1u << ones) - 1u) << 1) + seg2;
+    return true;
+}
+
+static bool ls11_grow(uint8_t **buf, size_t *cap, size_t need) {
+    if (need <= *cap) return true;
+
+    size_t ncap = (*cap) ? (*cap) * 2 : 64;
+    while (ncap < need) {
+        if (ncap > LS11_MAX_OUTPUT / 2) { ncap = LS11_MAX_OUTPUT; break; }
+        ncap *= 2;
+    }
+    if (ncap > LS11_MAX_OUTPUT) ncap = LS11_MAX_OUTPUT;
+    if (ncap < need) return false;
+
+    uint8_t *nb = (uint8_t*)realloc(*buf, ncap);
+    if (!nb) return false;
+    *buf = nb;
+    *cap = ncap;
+    return true;
+}
+
+bool ls11_decompress_stream(const uint8_t *src, size_t src_len,
+                            const uint8_t *dict, size_t dict_len,
+                            size_t dlen,
+                            uint8_t **out_data, size_t *out_size) {
+    if (out_data) *out_data = NULL;
+    if (out_size) *out_size = 0;
+    if (!out_data || !out_size || (!src && src_len)) return false;
+
+    size_t cap = dlen + 64;
+    if (cap > LS11_MAX_OUTPUT) cap = LS11_MAX_OUTPUT;
+    uint8_t *out = (uint8_t*)malloc(cap ? cap : 1);
+    if (!out) return false;
+
+    Ls11BitReader br = { src, src_len, 0 };
+    size_t n = 0;
+
+    while (n < dlen) {
+        uint32_t v;
+        if (!ls11_value(&br, &v)) break;   // bitstream exhausted: keep partial output
+
+        if (v < 256) {
+            if (v >= dict_len) { free(out); return false; }
+            if (!ls11_grow(&out, &cap, n + 1)) { free(out); return false; }
+            out[n++] = dict[v];
+        } else {
+            uint32_t dist = v - 256;
+            uint32_t lv;
+            if (!ls11_value(&br, &lv)) break;
+
+            size_t length = (size_t)lv + 3;
+            if (dist == 0 || (size_t)dist > n) { free(out); return false; }
+
+            // NOTE: like the Python reference, this copy is *not* clipped to
+            // dlen, so the result can exceed dlen by up to length-1 bytes.
+            for (size_t i = 0; i < length; i++) {
+                if (!ls11_grow(&out, &cap, n + 1)) { free(out); return false; }
+                out[n] = out[n - dist];
+                n++;
+            }
+        }
+    }
+
+    *out_data = out;
+    *out_size = n;
+    return true;
+}
