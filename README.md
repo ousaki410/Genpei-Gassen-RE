@@ -137,6 +137,9 @@ cmake --build build -j
 | `--faction <n>` | — | 鎌倉所属 | 覆盖玩家操作势力（0..14）；默认取鎌倉（30 号城）的势力 |
 | `--do-cmd <cmd>` | — | — | 无头执行一次内政命令：`develop` / `recruit` / `tax` / `officers` / `end`；自动选中该城首个未行动武将并弹出带立绘的结算框 |
 | `--end-turn <n>` | — | `0` | 无头连续推进 n 个月（跨年进位），并弹出最后一月的收入结算框 |
+| `--click <x,y[@frame]>` | — | — | 向 `InputState` 注入一次逻辑坐标左键点击边沿；可重复，亦可用 `;` 串联（`--click '560,75@1;200,103@2'`），默认从第 1 帧起逐帧分配 |
+| `--preview-npk <file> <block>` | — | — | 独立预览任意 NPK016 容器块（居中/全屏渲染），配合 `--screenshot` 无头验证 |
+| `--gallery <pack>` | — | — | 直接打开 NPK 画廊并定位到第 n 个包（0=Logo, 1=Mainevt, 2=Mainitem, 3=Mainstl, 4=Maincmd2, 5=Hkeshiki, 6=Hkumi, 7=Hikback） |
 | `--frames <n>` | — | `0` | 运行 n 帧后自动退出（`0` = 无限，用于回归/无头测试） |
 | `--screenshot <path>` | — | — | 第 2 帧导出 640x400 BMP 并退出（隐含 `--frames 10`） |
 
@@ -155,6 +158,19 @@ SDL_VIDEODRIVER=dummy ./bin/yphz_engine --select-castle 30 --end-turn 5 --frames
 
 # 非己方城池：命令会被拒绝（--faction 0 = 源氏，16 号城属平氏）
 SDL_VIDEODRIVER=dummy ./bin/yphz_engine --select-castle 16 --faction 0 --do-cmd tax --frames 2 --screenshot /tmp/deny.bmp
+
+# 子任务 5：无头鼠标点击（菜单项 → 名册行 → 执行开发并弹结算框）
+SDL_VIDEODRIVER=dummy ./bin/yphz_engine --select-castle 30 \
+    --click '560,75@1;200,103@2' --frames 4 --screenshot /tmp/click_dev.bmp
+
+# NPK016 视觉包预览（任意块）与画廊
+SDL_VIDEODRIVER=dummy ./bin/yphz_engine --preview-npk Hkeshiki.gp 0 --frames 2 --screenshot /tmp/hke.bmp
+SDL_VIDEODRIVER=dummy ./bin/yphz_engine --preview-npk Mainitem.gp 3 --frames 2 --screenshot /tmp/item3.bmp
+SDL_VIDEODRIVER=dummy ./bin/yphz_engine --gallery 2 --frames 3 --screenshot /tmp/gallery_item.bmp
+
+# 子任务 5：EXE 资产目录 / 裸图尺寸推导
+python3 tools/analyze_raw_and_exe.py
+python3 tools/analyze_raw_and_exe.py --json > /tmp/raw_layouts.json
 ```
 
 ### 键盘操作
@@ -162,7 +178,9 @@ SDL_VIDEODRIVER=dummy ./bin/yphz_engine --select-castle 16 --faction 0 --do-cmd 
 | 模式 | 按键 | 功能 |
 |---|---|---|
 | 通用 | `M` | 战略地图 ⇄ 武将立绘 切换 |
-| 通用 | `ESC` | 依次返回：结算对话框 → 武将一览 → 指令菜单 → 城池情报卡 → 退出 |
+| 通用 | `L` | 打开/关闭 NPK016 画廊（Logo / 事件 CG / 家宝 / 合战景等 8 个包） |
+| 通用 | `I` | 直接打开家宝图标画廊（`Mainitem.gp`，19 × 64×64） |
+| 通用 | `ESC` | 依次返回：画廊 → 结算对话框 → 武将一览 → 指令菜单 → 城池情报卡 → 退出 |
 | 地图 | `1`–`5` | **指令菜单打开时**：开发 / 征兵 / 征税 / 武将 / 终了 |
 | 地图 | `1`–`4` | **指令菜单关闭时**：切换剧本 |
 | 地图 | `[` / `]` | 上一 / 下一城池 |
@@ -170,6 +188,9 @@ SDL_VIDEODRIVER=dummy ./bin/yphz_engine --select-castle 16 --faction 0 --do-cmd 
 | 地图 | `C` / `Space` | 开/关城池情报卡（己方城池会同时弹出指令菜单） |
 | 地图 | `T` | 打开 `Message.gp` 台词对话框（再按翻到下一句） |
 | 地图 | `TAB` | 在主要据点间跳转 |
+| 画廊 | `←`/`→` | 上一 / 下一块（块索引自动循环钳制） |
+| 画廊 | `↑`/`↓` | 上一 / 下一个资产包（Logo → Mainevt → Mainitem → …） |
+| 画廊 | `L` / `ESC` / 右键 | 关闭画廊 |
 | 地图 | `←`/`→`（或 `A`/`D`） | 地图水平平移 |
 | 武将一览 | `↑`/`↓` | 滚动名册（每页 11 人） |
 | 武将一览 | 左键点击某行 | 查看该武将立绘与能力；若处于命令选人状态则直接执行该命令 |
@@ -292,6 +313,53 @@ python3 tools/probe_gp_files.py --csv        # 表格导入
 | `Disk-5.gp` | 18 | text | 源平合戦 DISK-5 |
 | `Version` | 526 | text | /******************************* |
 
+### EXE 内嵌资产目录（`tools/analyze_raw_and_exe.py`）
+
+DOS 可执行文件里保存着完整的资产文件名目录，这解释了每个 `.gp` 在游戏中的角色与加载顺序：
+
+| EXE | 目录偏移 | 条目 | 前缀 | 说明 |
+|---|---|---:|---|---|
+| `Main.exe` | `0x51741` | 28 | `C:` | 主程序（硬盘安装版）资产目录 |
+| `Main.ori` | `0x51721` | 28 | `A:` / `B:` | 原始磁盘版；后 6 个资产来自 B 盘 |
+| `Open.exe` | `0x11CB8` | 15 | `A:` / `B:` | 安装/片头加载器（含 `SNDATA1.GP`、`OPENDAT.GP`） |
+| `End.exe` | `0x14EA8` | 3 | `A:` | 结局加载器（`ENDDAT.GP` / `LOGO.GP` / `EDMUSIC.GP`） |
+
+`Main.exe` 目录顺序（`analyze_raw_and_exe.py` 可完整打印）：
+
+```
+MAINCMD MAINOBJ MAINSTL MESSAGE MUSIC PCM MAINPAL HAIKEI
+MAINCMD2 MAINEVT MAINITEM KISETSU SNDATA HCHIKEI HKESHIKI HGROUND
+HUNITPAT HIKUCHI HKUMI HIKBACK HKEI LOSEPAL MAINANM MAINMAP
+KAODATA MONTAGE LOGO SAVEDATA
+```
+
+该目录前 64 字节是一张 16 位远指针形状的表（如 `offset=0x0000, segment=0x2580`），
+可与加载缓冲区对应，后续反汇编 `Main.exe` 的资产加载函数即可拿到每块的实际
+段地址与解压入口。
+
+### 裸图尺寸推导
+
+PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字节）对齐，因此
+`align4(ceil(w/2)) * h * count == size`。工具同时测试 8bpp 与 1bpp，并对
+墓地/标准分辨率加权；无法干净分解的文件标记为「疑似压缩/结构化」，不强行给出假尺寸。
+
+| 文件 | 大小 | 推断 | 依据 |
+|---|---:|---|---|
+| `Hchikei.gp` | 10060 | **100×100 一字节图块 + 60 B 布阵表** | 10000 字节全为 0..12 的 tile id，尾部 60 字节是低值坐标表 |
+| `Hikuchi.gp` | 51840 | 4bpp **288×360**（备选 640×162） | 51840 = 144×360 = 320×162，288 宽与 `Hkumi` 一致 |
+| `Hkei.gp` | 6912 | 4bpp **96×144** 或 **288×48**（3 帧 96×48 条带） | 6912 = 48×144 = 144×48 |
+| `Mainobj.gp` | 24544 | 4bpp **208×236**（或 208×59×4 帧） | 24544 = 104×236；208 与 `Hkumi` 同宽 |
+| `Haikei.gp` | 47680 | 4bpp 320×298 或 640×149 → 疑似压缩 | 非 640×400 标准帧，两种分解都不自然 |
+| `Hground.gp` | 114048 | 4bpp 288×792 / 8bpp 288×396 → 疑似压缩 | 行宽与帧数组合过多 |
+| `Hunitpat.gp` | 151936 | 无干净分解（1187 为素数） | 4bpp 行宽只能是 4/8/…，h 恒为 1187 |
+| `Kisetsu.gp` | 66428 | 头部 u16 = **160×128**，但 4bpp 应为 10240 B/帧 | 66428 不是 10240 的整数倍 → 帧内压缩 |
+| `Mainanm.gp` | 220040 | 无干净分解（5501 为素数） | 同上 |
+| `Maincmd.gp` | 61216 | 无干净分解（1913 为素数） | 同上 |
+| `Montage.gp` | 239072 | 4bpp 496×964 / 8bpp 496×482 | 接近 512×512 结局拼图 |
+
+> 结论：`Hchikei` 已可立即实现（图块地图）；`Hikuchi` / `Hkei` / `Mainobj`
+> 有唯一/少数可信布局；其余 7 个图像在解压算法确认前不应按裸位图读取。
+
 ### 关键结论
 
 - **NPK016 图形容器（9 个）**：`Mainmap.gp`（20 块 88x360 → 1696x360 全景）、
@@ -315,10 +383,11 @@ python3 tools/probe_gp_files.py --csv        # 表格导入
 
 ### 下一步优先级
 
-1. 用现有 NPK016 解码器批量导出 `Maincmd2` / `Mainevt` / `Mainstl` / `Logo` /
-   `Hkeshiki` / `Hkumi` / `Hikback` 的精灵，替换当前的纯色 UI 占位；
-2. 以 `Kisetsu.gp`、`Mainanm.gp` 为突破口，确认「无头裸图」的宽高/位平面/调色板约定；
-3. 反汇编 `Main.exe` 中引用这些资产偏移的代码段，定位合战/行军逻辑入口；
+1. ✅ NPK016 视觉包已可 `--preview-npk` / 画廊预览；下一步把 `Maincmd2` / `Mainstl` /
+   `Logo` / `Mainevt` 接入实际 UI（事件 CG、菜单框、开场），替换纯色占位；
+2. ✅ 裸图侦察完成：`Hchikei` 已确认 **100×100 tile + 60 B 布阵表**；下一步实现图块
+   渲染，并用 `Hikuchi`（288×360）/`Hkei`（96×144）验证位平面约定；
+3. 顺着 `Main.exe:0x51741` 目录前的远指针表反汇编资产加载函数，定位合战/行军入口；
 4. 音频最后做（`Fmdrv.com` + `Music.gp` / `Opmusic.gp` / `Edmusic.gp`）。
 
 ---
@@ -327,7 +396,7 @@ python3 tools/probe_gp_files.py --csv        # 表格导入
 
 ### 一、源码文件职责与已实现功能
 
-**`src/main.c`（1371 行）— 入口与渲染主循环**
+**`src/main.c`（1599 行）— 入口与渲染主循环**
 - CLI 参数解析（见上表）+ `YPHZ_DATA_DIR` 环境变量。
 - 资源装载 `load_file()`：`Mainpal.pld`、`JIS.FNT`/`FONT.CHR`、`Main.exe`（读
   `0x4D3BB` 处 90 个立绘偏移表）、`Kaodata.gp`、`Hikback.gp`、`Maincmd2.gp`、
@@ -364,6 +433,11 @@ python3 tools/probe_gp_files.py --csv        # 表格导入
   `金 += max(20, 石高/50)`，逢 3/6/9/12 月 `石高 += max(10, 石高/60)`；
   重置全员 `acted`。战报只汇总玩家势力收入。
 - `turn_run_command_officer()`：可指定执行武将（名册点选），`-1` 则自动选人。
+
+**`src/npk.c`（78 行）— NPK016 通用容器访问**
+- `npk_load()` 扫描文件中全部 `NPK016` magic 并记录块偏移；`npk_decode()` 按块
+  调用 `nup4_decompress_block()`；`npk_free()` 释放容器。
+- 供 `--preview-npk`、`L`/`I` 画廊与后续合战背景按需使用，避免一次性占用数 MB 解码缓冲。
 
 **`src/hal_video.c`（377 行）— 视频 / 字体 HAL**
 - SDL2 窗口/渲染器/纹理初始化（640x400 逻辑分辨率，nearest 缩放，加速失败回退软件）。
@@ -449,16 +523,16 @@ python3 tools/probe_gp_files.py --csv        # 表格导入
 | 领域 | 现状 |
 |---|---|
 | **事件循环/输入** | ✅ 已抽出统一输入层 `src/input.c`（`input_poll(InputState*)`）：抽象键盘 `YphzKey` + 鼠标（逻辑坐标/位移/左右键边沿）；地图支持点击选城、拖拽/边缘/键盘卷动。仍未实现文本输入、手柄、快捷键重映射 |
-| **游戏逻辑** | 无回合/月份推进、无内政（开发/征兵/征税）、无行军/移动、无外交 |
+| **游戏逻辑** | ✅ 回合/月份推进与内政（开发/征兵/征税/换月）已完成；仍无行军/移动、外交、势力 AI |
 | **合战系统** | **完全未实现**：无战术地图、部队编成、战斗结算、AI |
 | **势力 AI** | 未实现 |
 | **存档** | `Savedata.gp` 未解析/未写入 |
 | **音频** | **完全未实现**：`Music.gp`/`Opmusic.gp`/`Edmusic.gp` 未解析，FM 驱动 `Fmdrv.com` 未逆向，无 MIDI/音效 |
 | **游戏内文本** | ✅ C 引擎已加载 `Message.gp`（LS11，5 条 / 2350 句）并在底部弹框显示；`Mainevt.gp` 事件脚本逻辑仍未逆向 |
-| **未解析的数据文件** | `Maincmd.gp`（菜单图，仅作背景）、`Mainobj.gp`、`Mainitem.gp`（道具）、`Kisetsu.gp`、`Montage.gp`、`Opendat.gp`、`Enddat.gp`、`Disk-*.gp`、NPC 立绘（64x80 通用）等 |
+| **未解析的数据文件** | `Maincmd.gp`、`Mainobj.gp`、`Kisetsu.gp`、`Montage.gp`、`Opendat.gp`、`Enddat.gp`、`Disk-*.gp` 等裸格式未解压；`Mainitem.gp` 已可画廊预览但未接入数值系统 |
 | **未逆向的程序** | `Main.exe`/`Genpei.com`/`Open.exe`/`End.exe` 的主循环、菜单、合战逻辑 |
 
-### 四、2200G 上的 3 个子任务（1–3 已完成）
+### 四、2200G 上的子任务（1–5 已完成）
 
 > 说明：当前全部渲染为软件 blit（640x400），2200G（Ryzen 3 2200G + Vega 8）完全
 > 够用；以下均不涉及重 GPU/着色器开发，先打通**逻辑层**。
@@ -500,6 +574,26 @@ python3 tools/probe_gp_files.py --csv        # 表格导入
 - 验收：`--do-cmd develop` 石高 `46000→46457`、金 `40000→38880`；`recruit`
   兵力 `220→450`；`tax` 金 `40000→42000`、士気 `230→227`；`--end-turn 5` 到
   `1181/2`，第 3 个月石高 `+3532`。`-Wall -Wextra` 零警告。
+
+**子任务 5 — 无头鼠标点击注入 + 9 个 NPK016 视觉包 + 裸图尺寸推导 — ✅ 已完成**
+- 新增 `--click <x,y[@frame]>`：在帧循环内直接改写 `InputState` 的鼠标位置与左键
+  边沿（`InputState.synthetic` 标记，跳过边缘自动卷动），支持重复传参与 `;` 串联。
+  验收：`--click '560,75@1;200,103@2'` 精确复现「点指令菜单 → 点名册首行」，
+  stdout 输出 `[TURN] DEVELOP ... gold=-1120 rice=+457 def=+4`，与 `--do-cmd develop`
+  数值完全一致。
+- 新增 `include/npk.h` / `src/npk.c`：通用 NPK016 容器索引（扫描全部 `NPK016`
+  magic、按需解压单块，避免一次性展开 `Hkeshiki` 的 4×640×400）。
+- 新增 `--preview-npk <file> <block>` 独立预览；游戏内 `L` 打开 8 包画廊
+  （Logo / Mainevt / Mainitem / Mainstl / Maincmd2 / Hkeshiki / Hkumi / Hikback），
+  `I` 直取 `Mainitem.gp` 的 19 个 64×64 家宝图标；`←/→` 换块、`↑/↓` 换包、`ESC` 关闭。
+  标题/说明统一转大写 ASCII（PC-98 `FONT.CHR` 小写不可靠）。
+- 新增 `tools/analyze_raw_and_exe.py`：
+  - 提取 `Main.exe`/`Main.ori`/`Open.exe`/`End.exe` 内嵌资产目录（28/28/15/3 条）
+    及目录前 64 字节的远指针常量；
+  - 对 11 个裸图按 4bpp/8bpp/1bpp 分解 `(w,h,count)` 并打分；
+  - 识别图块地图特例：`Hchikei.gp` = **100×100 tile + 60 B 布阵表**。
+- 验收：`--preview-npk Hkeshiki.gp 0` 渲染 4 张合战景之一（640×400，含左右上角
+  头像框与底部指令框）；`--gallery 2` 渲染家宝图标画廊；`-Wall -Wextra` 零警告。
 
 补充（非本期）：**音频**（先逆向 `Fmdrv.com` + `Music.gp` 的 FM 音源格式）与
 **合战战术界面**属于更大体量的独立方向，建议在以上 3 项之后再立项。

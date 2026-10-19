@@ -45,6 +45,8 @@ static YphzKey translate_key(SDL_Keycode sym) {
         case SDLK_m:            return YPHZ_KEY_M;
         case SDLK_o:            return YPHZ_KEY_O;
         case SDLK_t:            return YPHZ_KEY_T;
+        case SDLK_l:            return YPHZ_KEY_L;
+        case SDLK_i:            return YPHZ_KEY_I;
         case SDLK_LEFTBRACKET:  return YPHZ_KEY_LEFTBRACKET;
         case SDLK_RIGHTBRACKET: return YPHZ_KEY_RIGHTBRACKET;
         case SDLK_1:            return YPHZ_KEY_1;
@@ -52,6 +54,8 @@ static YphzKey translate_key(SDL_Keycode sym) {
         case SDLK_3:            return YPHZ_KEY_3;
         case SDLK_4:            return YPHZ_KEY_4;
         case SDLK_5:            return YPHZ_KEY_5;
+        case SDLK_6:            return YPHZ_KEY_6;
+        case SDLK_7:            return YPHZ_KEY_7;
         default:                return YPHZ_KEY_NONE;
     }
 }

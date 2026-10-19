@@ -9,6 +9,7 @@
 #include "decompress.h"
 #include "message.h"
 #include "turn.h"
+#include "npk.h"
 #include "scenario.h"
 
 static char s_asset_dir[256] = "games/yphz";
@@ -320,6 +321,81 @@ static void draw_dialog_box(const char *text, const char *tag,
     }
 }
 
+// ---------------------------------------------------------------------------
+// NPK016 gallery (L) / item viewer (I) and headless click injection
+// ---------------------------------------------------------------------------
+
+#define MAX_CLICKS 32
+
+typedef struct {
+    int x, y;
+    int frame;
+} ClickEvent;
+
+static const char *const GALLERY_PACKS[] = {
+    "Logo.gp", "Mainevt.gp", "Mainitem.gp", "Mainstl.gp",
+    "Maincmd2.gp", "Hkeshiki.gp", "Hkumi.gp", "Hikback.gp"
+};
+#define GALLERY_PACK_COUNT ((int)(sizeof(GALLERY_PACKS) / sizeof(GALLERY_PACKS[0])))
+
+// PC-98 FONT.CHR renders lower-case ASCII unreliably; labels stay upper-case.
+static void ascii_upper(char *s) {
+    for (; s && *s; s++) {
+        if (*s >= 'a' && *s <= 'z') *s = (char)(*s - 'a' + 'A');
+    }
+}
+
+static void draw_centered_image(const ImageDecoded *img) {
+    if (!img || !img->pixels) return;
+    int px = (PC98_WIDTH - img->width) / 2;
+    int py = (PC98_HEIGHT - img->height) / 2;
+    if (px < 0) px = 0;
+    if (py < 0) py = 0;
+    hal_video_blit_indexed(px, py, img->width, img->height,
+                           img->pixels, img->width);
+}
+
+// Load/decode the requested pack block, caching the last decoded image.
+// `block` is clamped to the pack's range; *cur_block reports the result.
+static bool gallery_update(int pack, int *block,
+                           NpkFile *npk, ImageDecoded *img,
+                           int *cur_pack, int *cur_block) {
+    if (pack < 0 || pack >= GALLERY_PACK_COUNT) return false;
+    if (pack == *cur_pack && *block == *cur_block && img->pixels) return true;
+
+    npk_free(npk);
+    free_decoded_image(img);
+    *cur_pack = -1;
+    *cur_block = -1;
+
+    if (!npk_load(npk, s_asset_dir, GALLERY_PACKS[pack])) return false;
+    if (*block < 0) *block = 0;
+    if (*block >= npk->count) *block = npk->count - 1;
+    if (!npk_decode(npk, *block, img)) return false;
+    *cur_pack = pack;
+    *cur_block = *block;
+    return true;
+}
+
+static void draw_gallery_overlay(int pack, int block, int count,
+                                 int img_w, int img_h) {
+    hal_video_fill_rect(0, 0, PC98_WIDTH, 20, 1);
+    hal_video_draw_rect(0, 0, PC98_WIDTH, 20, 7);
+
+    char hdr[128];
+    char pack_name[64];
+    snprintf(pack_name, sizeof(pack_name), "%s", GALLERY_PACKS[pack]);
+    ascii_upper(pack_name);
+    snprintf(hdr, sizeof(hdr), "NPK %s  BLOCK %d/%d  %dx%d",
+             pack_name, block + 1, count, img_w, img_h);
+    hal_video_draw_text_sjis(16, 2, hdr, 7);
+
+    hal_video_fill_rect(0, PC98_HEIGHT - 20, PC98_WIDTH, 20, 1);
+    hal_video_draw_rect(0, PC98_HEIGHT - 20, PC98_WIDTH, 20, 7);
+    hal_video_draw_text_sjis(16, PC98_HEIGHT - 18,
+        "LEFT/RIGHT:BLOCK  UP/DOWN:PACK  L/ESC:CLOSE", 6);
+}
+
 // ASCII command name for headless logs.
 static const char* turn_cmd_ascii(TurnCommand cmd) {
     switch (cmd) {
@@ -361,6 +437,27 @@ int main(int argc, char *argv[]) {
     int  roster_scroll = 0;
     bool roster_select_mode = false;              // roster is choosing an actor
     TurnCommand roster_cmd = TURN_CMD_NONE;       // command awaiting an officer
+
+    // Headless mouse-click injection: --click x,y[@frame], repeatable / ';'-list.
+    ClickEvent clicks[MAX_CLICKS];
+    int click_count = 0;
+    int next_click_frame = 1;
+
+    // --preview-npk <file> <block> standalone viewer.
+    const char *preview_npk_name = NULL;
+    int  preview_npk_index = 0;
+    bool preview_mode = false;
+    NpkFile preview_pack = {0};
+    ImageDecoded preview_img = {0};
+
+    // In-game NPK gallery (L) / item viewer (I).
+    bool gallery_mode = false;
+    int  gallery_pack = 0;
+    int  gallery_block = 0;
+    int  gallery_loaded_pack = -1;
+    int  gallery_loaded_block = -1;
+    NpkFile gallery_npk = {0};
+    ImageDecoded gallery_img = {0};
 
     const char *env_dir = getenv("YPHZ_DATA_DIR");
     if (env_dir) {
@@ -417,6 +514,48 @@ int main(int argc, char *argv[]) {
         } else if (strcmp(argv[i], "--end-turn") == 0 && i + 1 < argc) {
             end_turns = atoi(argv[++i]);
             if (end_turns < 0) end_turns = 0;
+        } else if (strcmp(argv[i], "--click") == 0 && i + 1 < argc) {
+            char *spec = argv[++i];
+            char *p = spec;
+            while (*p && click_count < MAX_CLICKS) {
+                char *tok = p;
+                char *semi = strchr(p, ';');
+                if (semi) {
+                    *semi = '\0';
+                    p = semi + 1;
+                } else {
+                    p += strlen(p);
+                }
+
+                int x = 0, y = 0, fr = -1;
+                if (sscanf(tok, "%d,%d@%d", &x, &y, &fr) < 2) {
+                    fprintf(stderr, "[WARN] bad --click token '%s' (want x,y[@frame])\n", tok);
+                    continue;
+                }
+                if (x < 0) x = 0;
+                if (x >= PC98_WIDTH) x = PC98_WIDTH - 1;
+                if (y < 0) y = 0;
+                if (y >= PC98_HEIGHT) y = PC98_HEIGHT - 1;
+                if (fr < 0) {
+                    fr = next_click_frame++;
+                } else if (fr >= next_click_frame) {
+                    next_click_frame = fr + 1;
+                }
+                clicks[click_count].x = x;
+                clicks[click_count].y = y;
+                clicks[click_count].frame = fr;
+                click_count++;
+            }
+        } else if (strcmp(argv[i], "--preview-npk") == 0 && i + 2 < argc) {
+            preview_npk_name = argv[++i];
+            preview_npk_index = atoi(argv[++i]);
+            if (preview_npk_index < 0) preview_npk_index = 0;
+        } else if (strcmp(argv[i], "--gallery") == 0 && i + 1 < argc) {
+            gallery_pack = atoi(argv[++i]);
+            if (gallery_pack < 0) gallery_pack = 0;
+            if (gallery_pack >= GALLERY_PACK_COUNT) gallery_pack = GALLERY_PACK_COUNT - 1;
+            gallery_mode = true;
+            gallery_loaded_pack = -1;
         }
     }
 
@@ -590,6 +729,20 @@ int main(int argc, char *argv[]) {
     // Portrait embedded in domestic-affairs report dialogues.
     ImageDecoded dlg_kao = {0};
 
+    // --preview-npk: decode one NPK016 block and display it standalone.
+    if (preview_npk_name) {
+        if (npk_load(&preview_pack, s_asset_dir, preview_npk_name) &&
+            npk_decode(&preview_pack, preview_npk_index, &preview_img)) {
+            preview_mode = true;
+            printf("[+] Preview %s block %d/%d: %dx%d\n",
+                   preview_npk_name, preview_npk_index, preview_pack.count,
+                   preview_img.width, preview_img.height);
+        } else {
+            fprintf(stderr, "[ERROR] --preview-npk failed: %s block %d\n",
+                    preview_npk_name, preview_npk_index);
+        }
+    }
+
     bool running = true;
     bool use_mask = true;
     int bg_mode = 1;
@@ -667,13 +820,32 @@ int main(int argc, char *argv[]) {
 
     while (running) {
         input_poll(&in);
+
+        // --- Headless mouse injection (--click x,y[@frame]) ---
+        for (int ci = 0; ci < click_count; ci++) {
+            if (clicks[ci].frame == frame_count) {
+                in.mouse_x = clicks[ci].x;
+                in.mouse_y = clicks[ci].y;
+                in.mouse_dx = 0;
+                in.mouse_dy = 0;
+                in.mouse_inside = true;
+                in.lbutton_pressed = true;
+                in.lbutton_down = true;
+                in.synthetic = true;
+                printf("[CLICK] frame=%d at (%d,%d)\n",
+                       frame_count, in.mouse_x, in.mouse_y);
+            }
+        }
+
         if (in.quit) running = false;
 
         const YphzKey key = in.key;
         if (key == YPHZ_KEY_ESCAPE) {
-            // ESC walks back up the UI stack: dialogue -> officer roster ->
-            // command menu -> castle card -> quit.
-            if (show_dialog) {
+            // ESC walks back up the UI stack: NPK gallery -> dialogue ->
+            // officer roster -> command menu -> castle card -> quit.
+            if (gallery_mode) {
+                gallery_mode = false;
+            } else if (show_dialog) {
                 show_dialog = false;
             } else if (show_officer_list) {
                 show_officer_list = false;
@@ -707,14 +879,47 @@ int main(int argc, char *argv[]) {
             }
         }
 
+        // --- NPK016 gallery (L) / item viewer (I) ---
+        if (gallery_mode) {
+            if (key == YPHZ_KEY_LEFT) {
+                gallery_block--;
+            } else if (key == YPHZ_KEY_RIGHT) {
+                gallery_block++;
+            } else if (key == YPHZ_KEY_UP) {
+                gallery_pack = (gallery_pack - 1 + GALLERY_PACK_COUNT) % GALLERY_PACK_COUNT;
+                gallery_block = 0;
+                gallery_loaded_pack = -1;
+            } else if (key == YPHZ_KEY_DOWN) {
+                gallery_pack = (gallery_pack + 1) % GALLERY_PACK_COUNT;
+                gallery_block = 0;
+                gallery_loaded_pack = -1;
+            }
+
+            if (gallery_update(gallery_pack, &gallery_block, &gallery_npk,
+                               &gallery_img, &gallery_loaded_pack,
+                               &gallery_loaded_block)) {
+                gallery_block = gallery_loaded_block;
+            }
+        } else if (key == YPHZ_KEY_L) {
+            gallery_mode = true;
+            gallery_loaded_pack = -1;
+        } else if (key == YPHZ_KEY_I) {
+            gallery_mode = true;
+            gallery_pack = 2;   // Mainitem.gp: 19 x 64x64 heirloom icons
+            gallery_block = 0;
+            gallery_loaded_pack = -1;
+        }
+
         // Mode Toggle: M
-        if (key == YPHZ_KEY_M) {
+        if (!gallery_mode && key == YPHZ_KEY_M) {
             map_mode = !map_mode;
             dragging = false;
             update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
         }
 
-        if (map_mode) {
+        if (gallery_mode) {
+            // NPK gallery is modal: map/officer input is suspended.
+        } else if (map_mode) {
             const bool player_castle =
                 (g_scenario.castles[cur_castle].faction_id == g_turn.player_faction);
             const bool modal_open = show_dialog || show_officer_list ||
@@ -911,7 +1116,7 @@ int main(int argc, char *argv[]) {
             // Map mouse interaction is disabled while a modal panel is up.
             if (!modal_open) {
                 // --- Mouse: edge auto-scroll ---
-                if (in.mouse_inside) {
+                if (in.mouse_inside && !in.synthetic) {
                     if (in.mouse_x < EDGE_SCROLL_MARGIN) {
                         camera_x = clamp_camera_x(camera_x - EDGE_SCROLL_STEP, map_w);
                     } else if (in.mouse_x >= PC98_WIDTH - EDGE_SCROLL_MARGIN) {
@@ -990,7 +1195,26 @@ int main(int argc, char *argv[]) {
         // --- Render Frame ---
         hal_video_clear(0);
 
-        if (map_mode && japan_map_pixels) {
+        if (preview_mode) {
+            // Standalone NPK016 block viewer (--preview-npk).
+            draw_centered_image(&preview_img);
+            char cap[128];
+            char npk_name[64];
+            snprintf(npk_name, sizeof(npk_name), "%s",
+                     preview_npk_name ? preview_npk_name : "?");
+            ascii_upper(npk_name);
+            snprintf(cap, sizeof(cap), "NPK %s  BLOCK %d/%d  %dx%d",
+                     npk_name, preview_npk_index, preview_pack.count,
+                     preview_img.width, preview_img.height);
+            hal_video_fill_rect(0, PC98_HEIGHT - 20, PC98_WIDTH, 20, 1);
+            hal_video_draw_rect(0, PC98_HEIGHT - 20, PC98_WIDTH, 20, 7);
+            hal_video_draw_text_sjis(16, PC98_HEIGHT - 18, cap, 7);
+        } else if (gallery_mode) {
+            // In-game NPK gallery (L) / heirloom icons (I).
+            draw_centered_image(&gallery_img);
+            draw_gallery_overlay(gallery_pack, gallery_block, gallery_npk.count,
+                                 gallery_img.width, gallery_img.height);
+        } else if (map_mode && japan_map_pixels) {
             // ===============================================================
             // Strategic Map Mode (1696x360 Full Japan Seamless Panorama)
             // ===============================================================
@@ -1354,6 +1578,10 @@ int main(int argc, char *argv[]) {
 
     free_decoded_image(&cur_kao);
     free_decoded_image(&dlg_kao);
+    free_decoded_image(&preview_img);
+    npk_free(&preview_pack);
+    free_decoded_image(&gallery_img);
+    npk_free(&gallery_npk);
     if (bg_hik.pixels) free_decoded_image(&bg_hik);
     if (bg_palace.pixels) free_decoded_image(&bg_palace);
     if (japan_map_pixels) free(japan_map_pixels);
