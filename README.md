@@ -209,6 +209,118 @@ python3 tools/extractor/extract_text.py      # Message.gp 对话 -> extracted_as
 python3 tools/extractor/extract_palette.py   # Mainpal/Losepal -> extracted_assets/palettes
 ```
 
+资产格式侦察（无需第三方依赖，只读）：
+
+```bash
+python3 tools/probe_gp_files.py              # 53 个文件的 Magic/格式清单
+python3 tools/probe_gp_files.py --json       # 机器可读（stdout）
+python3 tools/probe_gp_files.py --csv        # 表格导入
+```
+
+---
+
+## 资产格式盘点（`games/yphz/`，53 个文件）
+
+> 由 `tools/probe_gp_files.py` 扫描生成：
+>
+> ```bash
+> python3 tools/probe_gp_files.py            # 人类可读表格
+> python3 tools/probe_gp_files.py --json     # 结构化输出（stdout）
+> python3 tools/probe_gp_files.py --csv      # CSV
+> ```
+>
+> 类别依据文件头 Magic + 结构启发式：`LS11` / `NPK016` / `MZ` / COM 跳转 /
+> `.pld` / 字体 / cp932 文本；其余归为 `raw`，并打印前 4 个 u16、零字节占比、
+> 字节熵与唯一字节数，供下一步逆向判断位平面/图块格式。
+
+**汇总**：`raw` 19、`NPK016` 9、`DOS EXE` 6、`text` 6、`DOS COM` 3、
+`font` 3、`batch` 2、`config` 2、`palette` 2、`LS11` 1。
+
+| 文件 | 大小 (B) | 类别 | 格式 / 说明 |
+|---|---:|---|---|
+| `DOSJP.COM` | 3871 | DOS COM | COM binary, first opcode 0xb8 |
+| `Fmdrv.com` | 4774 | DOS COM | COM binary, first opcode 0xe9 |
+| `Genpei.com` | 1884 | DOS COM | COM binary, first opcode 0xe9 |
+| `End.exe` | 92121 | DOS EXE | MZ, header paragraphs=352 |
+| `Grpdrv.exe` | 21875 | DOS EXE | MZ, header paragraphs=32 |
+| `Install.exe` | 21731 | DOS EXE | MZ, header paragraphs=32 |
+| `Main.exe` | 384322 | DOS EXE | MZ, header paragraphs=4 |
+| `Main.ori` | 357780 | DOS EXE | MZ, header paragraphs=2 |
+| `Open.exe` | 79605 | DOS EXE | MZ, header paragraphs=320 |
+| `Message.gp` | 33973 | LS11 | 5 compressed record(s), 0x110 table |
+| `Hikback.gp` | 9643 | NPK016 | 1 block(s): 288x176 |
+| `Hkeshiki.gp` | 208531 | NPK016 | 4 block(s): 640x400 |
+| `Hkumi.gp` | 41563 | NPK016 | 5 block(s): 208x160 |
+| `Logo.gp` | 8043 | NPK016 | 5 block(s): 208x112, 208x24, 368x48, 400x24, ... |
+| `Maincmd2.gp` | 313971 | NPK016 | 4 block(s): 640x400, 160x128 |
+| `Mainevt.gp` | 57891 | NPK016 | 13 block(s): 160x128, 128x128, 32x64 |
+| `Mainitem.gp` | 20801 | NPK016 | 19 block(s): 64x64 |
+| `Mainmap.gp` | 257913 | NPK016 | 20 block(s): 88x360 |
+| `Mainstl.gp` | 60633 | NPK016 | 13 block(s): 64x152, 520x168 |
+| `DOSV.BAT` | 26 | batch | dosvfont -f:font.dat -tj |
+| `Play.bat` | 52 | batch | @echo off  cls  DOSJP -F:font.dat -TJ  genpei  c |
+| `Config.5` | 51 | config | BUFFERS=10  FILES=20  DEVICE=HIM |
+| `Install.sys` | 2732 | config | REM	『源平合戦』	ハードＤｉｓｋインストール情報ファイル |
+| `FONT.CHR` | 4096 | font | 256 x 8x16 half-width glyphs |
+| `FONT.DAT` | 366976 | font | DOS/V font data |
+| `JIS.FNT` | 286336 | font | JIS X 0208 16x16 glyph bank |
+| `Losepal.pld` | 192 | palette | 64 colors (4 bank(s) x 16) |
+| `Mainpal.pld` | 192 | palette | 64 colors (4 bank(s) x 16) |
+| `Edmusic.gp` | 3477 | raw | u16[0 0 2666 2666] zero=6.2% H=6.43b/B unique=197 \| FM/PMD ending music (not parsed yet) |
+| `Enddat.gp` | 1037151 | raw | u16[0 768 513 7] zero=3.7% H=6.98b/B unique=256 \| ending / epilogue data (not parsed yet) |
+| `Haikei.gp` | 47680 | raw | u16[213 21802 43520 85] zero=37.7% H=4.43b/B unique=253 \| battle background (raw, not parsed yet) |
+| `Hchikei.gp` | 10060 | raw | u16[0 1 256 257] zero=42.8% H=2.50b/B unique=13 \| battle terrain map (raw, not parsed yet) |
+| `Hground.gp` | 114048 | raw | u16[0 0 0 0] zero=49.8% H=3.82b/B unique=247 \| battle ground tiles (raw, not parsed yet) |
+| `Hikuchi.gp` | 51840 | raw | u16[0 0 0 0] zero=61.3% H=2.71b/B unique=244 \| battle fortress/base graphics (raw, not parsed yet) |
+| `Hkei.gp` | 6912 | raw | u16[255 65535 65280 255] zero=18.1% H=6.23b/B unique=255 \| battle unit/effect graphics (raw, not parsed yet) |
+| `Hunitpat.gp` | 151936 | raw | u16[0 4096 16 1030] zero=59.7% H=3.29b/B unique=256 \| battle unit patterns (raw, not parsed yet) |
+| `Kaodata.gp` | 495435 | raw | u16[128 160 112 38815] zero=11.0% H=6.41b/B unique=256 \| portrait bank, 90 x 0x728 records (see decompress.c) |
+| `Kisetsu.gp` | 66428 | raw | u16[160 128 43637 43524] zero=6.3% H=6.32b/B unique=255 \| seasonal background (raw, not parsed yet) |
+| `Mainanm.gp` | 220040 | raw | u16[255 65535 65280 255] zero=33.8% H=4.72b/B unique=256 \| animation frames (raw, not parsed yet) |
+| `Maincmd.gp` | 61216 | raw | u16[65450 255 65450 510] zero=48.7% H=4.23b/B unique=256 \| command/UI sprite/bitmap data (raw, not parsed yet) |
+| `Mainobj.gp` | 24544 | raw | u16[0 0 0 0] zero=43.6% H=4.64b/B unique=256 \| map object sprites (raw, not parsed yet) |
+| `Montage.gp` | 239072 | raw | u16[0 2560 0 234] zero=50.7% H=4.11b/B unique=256 \| montage / ending collage (raw, not parsed yet) |
+| `Music.gp` | 44640 | raw | u16[22 0 0 1600] zero=5.3% H=6.53b/B unique=255 \| FM/PMD music data (not parsed yet) |
+| `Opendat.gp` | 853233 | raw | u16[0 768 517 2826] zero=6.4% H=6.88b/B unique=256 \| opening / prologue data (not parsed yet) |
+| `Opmusic.gp` | 3760 | raw | u16[0 0 608 608] zero=2.8% H=6.27b/B unique=167 \| FM/PMD opening music (not parsed yet) |
+| `Savedata.gp` | 434030 | raw | u16[1180 266 0 48533] zero=13.0% H=6.93b/B unique=256 \| save-game table (not parsed yet) |
+| `Sndata.gp` | 165064 | raw | u16[1180 521 0 1] zero=36.2% H=5.33b/B unique=256 \| scenario table: 4 x 41266 B (officers/castles/conns) |
+| `Disk-1.gp` | 18 | text | 源平合戦 DISK-1 |
+| `Disk-2.gp` | 18 | text | 源平合戦 DISK-2 |
+| `Disk-3.gp` | 18 | text | 源平合戦 DISK-3 |
+| `Disk-4.gp` | 18 | text | 源平合戦 DISK-4 |
+| `Disk-5.gp` | 18 | text | 源平合戦 DISK-5 |
+| `Version` | 526 | text | /******************************* |
+
+### 关键结论
+
+- **NPK016 图形容器（9 个）**：`Mainmap.gp`（20 块 88x360 → 1696x360 全景）、
+  `Maincmd2.gp`（4 块，含 640x400 宫殿背景）、`Mainevt.gp`（13 块事件画）、
+  `Mainitem.gp`（19 块 64x64 道具）、`Mainstl.gp`（13 块）、`Logo.gp`（5 块）、
+  `Hikback.gp`（1 块 288x176）、`Hkeshiki.gp`（4 块 640x400 合战景）、
+  `Hkumi.gp`（5 块 208x160 阵形）。**现有 C/Python NPK016 解码器可直接解包。**
+- **LS11（1 个）**：仅 `Message.gp`；C 实现已与 Python 逐字节对齐。
+- **裸图 / 图块（19 个 raw）**：`Kaodata.gp` 已解析（0x728 立绘）；`Kisetsu.gp`
+  开头 u16 = `160,128`，疑似 160x128 图像；`Mainanm` / `Maincmd` / `Mainobj` /
+  `Montage` / `Haikei` / `Hchikei` / `Hground` / `Hikuchi` / `Hkei` / `Hunitpat`
+  的零字节占比与熵符合 4-bitplane 或 8-bit 图块特征，但**无块头**，需结合
+  `Main.exe` 的调用点确认宽高/调色板。
+- **合战资产并非 `Btl*.gp`**：本作合战资源使用 `H*` 前缀（`Hikback`、`Hkeshiki`、
+  `Hkumi`、`Hground`、`Hchikei`、`Hikuchi`、`Hkei`、`Hunitpat`、`Haikei`），
+  其中 3 个为 NPK016 容器、6 个为裸图块。
+- **音频（3 个 raw）**：`Music.gp` / `Opmusic.gp` / `Edmusic.gp` 无已知 Magic，
+  需结合 `Fmdrv.com` 驱动反汇编确定 FM/PMD 指令流。
+- **数据表（4 个 raw）**：`Sndata.gp`（已解析）、`Savedata.gp`（存档）、
+  `Opendat.gp`（片头脚本）、`Enddat.gp`（结局脚本）。
+
+### 下一步优先级
+
+1. 用现有 NPK016 解码器批量导出 `Maincmd2` / `Mainevt` / `Mainstl` / `Logo` /
+   `Hkeshiki` / `Hkumi` / `Hikback` 的精灵，替换当前的纯色 UI 占位；
+2. 以 `Kisetsu.gp`、`Mainanm.gp` 为突破口，确认「无头裸图」的宽高/位平面/调色板约定；
+3. 反汇编 `Main.exe` 中引用这些资产偏移的代码段，定位合战/行军逻辑入口；
+4. 音频最后做（`Fmdrv.com` + `Music.gp` / `Opmusic.gp` / `Edmusic.gp`）。
+
 ---
 
 ## 【当前逆向与移植进度盘点】
@@ -315,6 +427,7 @@ python3 tools/extractor/extract_palette.py   # Mainpal/Losepal -> extracted_asse
 | `extract_images.py` | 309 | NPK016/NUP4 解码（`decompress.c` 的 Python 对照实现），批量解包 8 个 `.gp`、生成道具表与片头画面 |
 | `extract_kaodata.py` | 201 | Kaodata 0x728 解码（对照实现），导出索引 PNG / 透明 RGBA PNG / 10x9 立绘表 + manifest |
 | `extract_palette.py` | 76 | `Mainpal.pld`/`Losepal.pld`（4 bank × 16 色，BGR）→ JSON + 色板 PNG |
+| `probe_gp_files.py` | 285 | 53 个资产文件的 Magic/格式侦察（LS11/NPK016/MZ/COM/PLD/字体/文本/raw），表格 + JSON + CSV 输出，无第三方依赖 |
 
 ### 二、已跑通模块 ✅
 
