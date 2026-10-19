@@ -1,0 +1,127 @@
+REM	『源平合戦』	ハードＤｉｓｋインストール情報ファイル
+SET TITLE  = '\33c4          源平合戦        \33c7ハードディスク　インストール
+
+REM	ゲーム名
+SET GAME_NAME  = \33c5源平合戦\33C7
+
+REM	必要ＤＩＳＫ容量
+SET DISKFREE = 6291456
+
+REM	インストールするディレクトリ名
+SET DIR = \GENPEI
+
+REM	実行ファイル名
+SET SHELL = GEN.COM
+
+REM	インストール
+REM SET DIRFNAME = GEN.DIR
+
+REM	ゲームのバージョンなどの情報の入っているファイル名
+REM	立ち上げｄｉｓｋに書き込んでおくために指定する
+REM	これによりユーザのインストールしているゲームのバージョンが解る
+REM	立ち上げＤｉｓｋには、システム属性で書き込む
+REM SET VERFNAME = VERSION
+INIT_END
+
+REM	ＤＩＳＫ名称（Ｄｉｓｋ差し替えメッセージに使用する）
+
+CLS1
+CLS2
+IF EXIST DISK-1.GP GOTO NEXT_1
+ECHO	1 \33C5源平合戦 ディスク１\33C7\n
+ECHO	'を\33c6第１ドライブ\33c7に入れ、何かキーを押してください。
+PAUSE
+:A_DISK
+IF EXIST DISK-1.GP GOTO NEXT_1
+ECHO	3 \33c2ディスクが違います。\n
+ECHO	ディスクを確認した後、何かキーを押してください。
+PAUSE
+CLS3
+GOTO A_DISK
+:NEXT_1
+CLS1
+ECHO	1 ファイル転送中・・・
+CLS2
+copy *.*
+CLS1
+CLS2
+ECHO	1 \33C5源平合戦 ディスク２\33C7\n
+ECHO	'を\33c6第１ドライブ\33c7に入れ、何かキーを押してください。
+PAUSE
+:B_DISK
+IF EXIST DISK-2.GP GOTO NEXT_2
+ECHO	3 \33c2ディスクが違います。\n
+ECHO	ディスクを確認した後、何かキーを押してください。
+PAUSE
+CLS3
+GOTO B_DISK
+:NEXT_2
+CLS1
+ECHO	1 ファイル転送中・・・
+CLS2
+COPY *.*
+CLS1
+CLS2
+ECHO	1 \33C5源平合戦 ディスク３\33C7\n
+ECHO	'を\33c6第１ドライブ\33c7に入れ、何かキーを押してください。
+PAUSE
+:C_DISK
+IF EXIST DISK-3.GP GOTO NEXT_3
+ECHO	3 \33c2ディスクが違います。\n
+ECHO	ディスクを確認した後、何かキーを押してください。
+PAUSE
+CLS3
+GOTO C_DISK
+:NEXT_3
+CLS1
+ECHO	1 ファイル転送中・・・
+CLS2
+COPY *.*
+CLS1
+CLS2
+ECHO	1 \33C5源平合戦 ディスク４\33C7\n
+ECHO	'を\33c6第１ドライブ\33c7に入れ、何かキーを押してください。
+PAUSE
+:D_DISK
+IF EXIST DISK-4.GP GOTO NEXT_4
+ECHO	3 \33c2ディスクが違います。\n
+ECHO	ディスクを確認した後、何かキーを押してください。
+PAUSE
+CLS3
+GOTO D_DISK
+:NEXT_4
+CLS1
+ECHO	1 ファイル転送中・・・
+CLS2
+COPY *.*
+CLS1
+CLS2
+ECHO	1 \33C5源平合戦 ディスク５\33C7\n
+ECHO	'を\33c6第１ドライブ\33c7に入れ、何かキーを押してください。
+PAUSE
+:E_DISK
+IF EXIST DISK-5.GP GOTO NEXT_5
+ECHO	3 \33c2ディスクが違います。\n
+ECHO	ディスクを確認した後、何かキーを押してください。
+PAUSE
+CLS3
+GOTO E_DISK
+:NEXT_5
+CLS1
+ECHO	1 ファイル転送中・・・
+CLS2
+COPY *.*
+
+END
+cls1
+echo	これでインストールは終了です。
+cls2
+echo	ゲームの起動方法はマニュアルに記載してあります。
+echo	マニュアルを良くお読みのうえ、ゲームをお楽しみください
+cls3
+echo	【リターンキー】を押してください。
+
+:inp_key
+pause 1	
+if key != 0x0d goto inp_key
+

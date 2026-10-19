@@ -1,0 +1,658 @@
+{
+  "Logo.gp": [
+    {
+      "index": 0,
+      "file": "extracted_assets/images/logo/logo_00.png",
+      "dims": [
+        208,
+        112
+      ],
+      "offset": 0,
+      "bytes": 1296
+    },
+    {
+      "index": 1,
+      "file": "extracted_assets/images/logo/logo_01.png",
+      "dims": [
+        208,
+        24
+      ],
+      "offset": 1296,
+      "bytes": 857
+    },
+    {
+      "index": 2,
+      "file": "extracted_assets/images/logo/logo_02.png",
+      "dims": [
+        368,
+        48
+      ],
+      "offset": 2153,
+      "bytes": 1263
+    },
+    {
+      "index": 3,
+      "file": "extracted_assets/images/logo/logo_03.png",
+      "dims": [
+        400,
+        24
+      ],
+      "offset": 3416,
+      "bytes": 1646
+    },
+    {
+      "index": 4,
+      "file": "extracted_assets/images/logo/logo_04.png",
+      "dims": [
+        272,
+        104
+      ],
+      "offset": 5062,
+      "bytes": 2981
+    }
+  ],
+  "Mainitem.gp": [
+    {
+      "index": 0,
+      "file": "extracted_assets/images/mainitem/mainitem_00.png",
+      "dims": [
+        64,
+        64
+      ],
+      "offset": 0,
+      "bytes": 1114
+    },
+    {
+      "index": 1,
+      "file": "extracted_assets/images/mainitem/mainitem_01.png",
+      "dims": [
+        64,
+        64
+      ],
+      "offset": 1114,
+      "bytes": 1128
+    },
+    {
+      "index": 2,
+      "file": "extracted_assets/images/mainitem/mainitem_02.png",
+      "dims": [
+        64,
+        64
+      ],
+      "offset": 2242,
+      "bytes": 917
+    },
+    {
+      "index": 3,
+      "file": "extracted_assets/images/mainitem/mainitem_03.png",
+      "dims": [
+        64,
+        64
+      ],
+      "offset": 3159,
+      "bytes": 828
+    },
+    {
+      "index": 4,
+      "file": "extracted_assets/images/mainitem/mainitem_04.png",
+      "dims": [
+        64,
+        64
+      ],
+      "offset": 3987,
+      "bytes": 1243
+    },
+    {
+      "index": 5,
+      "file": "extracted_assets/images/mainitem/mainitem_05.png",
+      "dims": [
+        64,
+        64
+      ],
+      "offset": 5230,
+      "bytes": 1097
+    },
+    {
+      "index": 6,
+      "file": "extracted_assets/images/mainitem/mainitem_06.png",
+      "dims": [
+        64,
+        64
+      ],
+      "offset": 6327,
+      "bytes": 1203
+    },
+    {
+      "index": 7,
+      "file": "extracted_assets/images/mainitem/mainitem_07.png",
+      "dims": [
+        64,
+        64
+      ],
+      "offset": 7530,
+      "bytes": 1171
+    },
+    {
+      "index": 8,
+      "file": "extracted_assets/images/mainitem/mainitem_08.png",
+      "dims": [
+        64,
+        64
+      ],
+      "offset": 8701,
+      "bytes": 1023
+    },
+    {
+      "index": 9,
+      "file": "extracted_assets/images/mainitem/mainitem_09.png",
+      "dims": [
+        64,
+        64
+      ],
+      "offset": 9724,
+      "bytes": 958
+    },
+    {
+      "index": 10,
+      "file": "extracted_assets/images/mainitem/mainitem_10.png",
+      "dims": [
+        64,
+        64
+      ],
+      "offset": 10682,
+      "bytes": 1125
+    },
+    {
+      "index": 11,
+      "file": "extracted_assets/images/mainitem/mainitem_11.png",
+      "dims": [
+        64,
+        64
+      ],
+      "offset": 11807,
+      "bytes": 840
+    },
+    {
+      "index": 12,
+      "file": "extracted_assets/images/mainitem/mainitem_12.png",
+      "dims": [
+        64,
+        64
+      ],
+      "offset": 12647,
+      "bytes": 628
+    },
+    {
+      "index": 13,
+      "file": "extracted_assets/images/mainitem/mainitem_13.png",
+      "dims": [
+        64,
+        64
+      ],
+      "offset": 13275,
+      "bytes": 1724
+    },
+    {
+      "index": 14,
+      "file": "extracted_assets/images/mainitem/mainitem_14.png",
+      "dims": [
+        64,
+        64
+      ],
+      "offset": 14999,
+      "bytes": 1279
+    },
+    {
+      "index": 15,
+      "file": "extracted_assets/images/mainitem/mainitem_15.png",
+      "dims": [
+        64,
+        64
+      ],
+      "offset": 16278,
+      "bytes": 979
+    },
+    {
+      "index": 16,
+      "file": "extracted_assets/images/mainitem/mainitem_16.png",
+      "dims": [
+        64,
+        64
+      ],
+      "offset": 17257,
+      "bytes": 1372
+    },
+    {
+      "index": 17,
+      "file": "extracted_assets/images/mainitem/mainitem_17.png",
+      "dims": [
+        64,
+        64
+      ],
+      "offset": 18629,
+      "bytes": 1000
+    },
+    {
+      "index": 18,
+      "file": "extracted_assets/images/mainitem/mainitem_18.png",
+      "dims": [
+        64,
+        64
+      ],
+      "offset": 19629,
+      "bytes": 1172
+    }
+  ],
+  "Hikback.gp": [
+    {
+      "index": 0,
+      "file": "extracted_assets/images/hikback/hikback.png",
+      "dims": [
+        288,
+        176
+      ],
+      "offset": 0,
+      "bytes": 9643
+    }
+  ],
+  "Mainstl.gp": [
+    {
+      "index": 0,
+      "file": "extracted_assets/images/mainstl/mainstl_00.png",
+      "dims": [
+        64,
+        152
+      ],
+      "offset": 0,
+      "bytes": 2119
+    },
+    {
+      "index": 1,
+      "file": "extracted_assets/images/mainstl/mainstl_01.png",
+      "dims": [
+        64,
+        152
+      ],
+      "offset": 2119,
+      "bytes": 1879
+    },
+    {
+      "index": 2,
+      "file": "extracted_assets/images/mainstl/mainstl_02.png",
+      "dims": [
+        64,
+        152
+      ],
+      "offset": 3998,
+      "bytes": 2132
+    },
+    {
+      "index": 3,
+      "file": "extracted_assets/images/mainstl/mainstl_03.png",
+      "dims": [
+        64,
+        152
+      ],
+      "offset": 6130,
+      "bytes": 2326
+    },
+    {
+      "index": 4,
+      "file": "extracted_assets/images/mainstl/mainstl_04.png",
+      "dims": [
+        64,
+        152
+      ],
+      "offset": 8456,
+      "bytes": 2269
+    },
+    {
+      "index": 5,
+      "file": "extracted_assets/images/mainstl/mainstl_05.png",
+      "dims": [
+        64,
+        152
+      ],
+      "offset": 10725,
+      "bytes": 2419
+    },
+    {
+      "index": 6,
+      "file": "extracted_assets/images/mainstl/mainstl_06.png",
+      "dims": [
+        64,
+        152
+      ],
+      "offset": 13144,
+      "bytes": 2719
+    },
+    {
+      "index": 7,
+      "file": "extracted_assets/images/mainstl/mainstl_07.png",
+      "dims": [
+        64,
+        152
+      ],
+      "offset": 15863,
+      "bytes": 1645
+    },
+    {
+      "index": 8,
+      "file": "extracted_assets/images/mainstl/mainstl_08.png",
+      "dims": [
+        64,
+        152
+      ],
+      "offset": 17508,
+      "bytes": 2438
+    },
+    {
+      "index": 9,
+      "file": "extracted_assets/images/mainstl/mainstl_09.png",
+      "dims": [
+        64,
+        152
+      ],
+      "offset": 19946,
+      "bytes": 1838
+    },
+    {
+      "index": 10,
+      "file": "extracted_assets/images/mainstl/mainstl_10.png",
+      "dims": [
+        64,
+        152
+      ],
+      "offset": 21784,
+      "bytes": 1711
+    },
+    {
+      "index": 11,
+      "file": "extracted_assets/images/mainstl/mainstl_11.png",
+      "dims": [
+        64,
+        152
+      ],
+      "offset": 23495,
+      "bytes": 2308
+    },
+    {
+      "index": 12,
+      "file": "extracted_assets/images/mainstl/mainstl_12.png",
+      "dims": [
+        520,
+        168
+      ],
+      "offset": 25803,
+      "bytes": 34830
+    }
+  ],
+  "Maincmd2.gp": [
+    {
+      "index": 0,
+      "file": "extracted_assets/images/maincmd2/maincmd2_00.png",
+      "dims": [
+        640,
+        400
+      ],
+      "offset": 0,
+      "bytes": 33289
+    },
+    {
+      "index": 1,
+      "file": "extracted_assets/images/maincmd2/maincmd2_01.png",
+      "dims": [
+        640,
+        400
+      ],
+      "offset": 33289,
+      "bytes": 26038
+    },
+    {
+      "index": 2,
+      "file": "extracted_assets/images/maincmd2/maincmd2_02.png",
+      "dims": [
+        640,
+        400
+      ],
+      "offset": 59327,
+      "bytes": 26813
+    },
+    {
+      "index": 3,
+      "file": "extracted_assets/images/maincmd2/maincmd2_03.png",
+      "dims": [
+        160,
+        128
+      ],
+      "offset": 87292,
+      "bytes": 4267
+    }
+  ],
+  "Mainevt.gp": [
+    {
+      "index": 0,
+      "file": "extracted_assets/images/mainevt/mainevt_00.png",
+      "dims": [
+        160,
+        128
+      ],
+      "offset": 0,
+      "bytes": 8141
+    },
+    {
+      "index": 1,
+      "file": "extracted_assets/images/mainevt/mainevt_01.png",
+      "dims": [
+        160,
+        128
+      ],
+      "offset": 8141,
+      "bytes": 8334
+    },
+    {
+      "index": 2,
+      "file": "extracted_assets/images/mainevt/mainevt_02.png",
+      "dims": [
+        160,
+        128
+      ],
+      "offset": 16475,
+      "bytes": 8869
+    },
+    {
+      "index": 3,
+      "file": "extracted_assets/images/mainevt/mainevt_03.png",
+      "dims": [
+        160,
+        128
+      ],
+      "offset": 25344,
+      "bytes": 6589
+    },
+    {
+      "index": 4,
+      "file": "extracted_assets/images/mainevt/mainevt_04.png",
+      "dims": [
+        128,
+        128
+      ],
+      "offset": 31933,
+      "bytes": 5791
+    },
+    {
+      "index": 5,
+      "file": "extracted_assets/images/mainevt/mainevt_05.png",
+      "dims": [
+        128,
+        128
+      ],
+      "offset": 37724,
+      "bytes": 5771
+    },
+    {
+      "index": 6,
+      "file": "extracted_assets/images/mainevt/mainevt_06.png",
+      "dims": [
+        128,
+        128
+      ],
+      "offset": 43495,
+      "bytes": 5786
+    },
+    {
+      "index": 7,
+      "file": "extracted_assets/images/mainevt/mainevt_07.png",
+      "dims": [
+        128,
+        128
+      ],
+      "offset": 49281,
+      "bytes": 5645
+    },
+    {
+      "index": 8,
+      "file": "extracted_assets/images/mainevt/mainevt_08.png",
+      "dims": [
+        32,
+        64
+      ],
+      "offset": 54926,
+      "bytes": 623
+    },
+    {
+      "index": 9,
+      "file": "extracted_assets/images/mainevt/mainevt_09.png",
+      "dims": [
+        32,
+        64
+      ],
+      "offset": 55549,
+      "bytes": 622
+    },
+    {
+      "index": 10,
+      "file": "extracted_assets/images/mainevt/mainevt_10.png",
+      "dims": [
+        32,
+        64
+      ],
+      "offset": 56171,
+      "bytes": 649
+    },
+    {
+      "index": 11,
+      "file": "extracted_assets/images/mainevt/mainevt_11.png",
+      "dims": [
+        32,
+        64
+      ],
+      "offset": 56820,
+      "bytes": 552
+    },
+    {
+      "index": 12,
+      "file": "extracted_assets/images/mainevt/mainevt_12.png",
+      "dims": [
+        32,
+        64
+      ],
+      "offset": 57372,
+      "bytes": 519
+    }
+  ],
+  "Hkumi.gp": [
+    {
+      "index": 0,
+      "file": "extracted_assets/images/hkumi/hkumi_00.png",
+      "dims": [
+        208,
+        160
+      ],
+      "offset": 0,
+      "bytes": 9373
+    },
+    {
+      "index": 1,
+      "file": "extracted_assets/images/hkumi/hkumi_01.png",
+      "dims": [
+        208,
+        160
+      ],
+      "offset": 9373,
+      "bytes": 7241
+    },
+    {
+      "index": 2,
+      "file": "extracted_assets/images/hkumi/hkumi_02.png",
+      "dims": [
+        208,
+        160
+      ],
+      "offset": 16614,
+      "bytes": 8249
+    },
+    {
+      "index": 3,
+      "file": "extracted_assets/images/hkumi/hkumi_03.png",
+      "dims": [
+        208,
+        160
+      ],
+      "offset": 24863,
+      "bytes": 8462
+    },
+    {
+      "index": 4,
+      "file": "extracted_assets/images/hkumi/hkumi_04.png",
+      "dims": [
+        208,
+        160
+      ],
+      "offset": 33325,
+      "bytes": 8238
+    }
+  ],
+  "Hkeshiki.gp": [
+    {
+      "index": 0,
+      "file": "extracted_assets/images/hkeshiki/hkeshiki_00.png",
+      "dims": [
+        640,
+        400
+      ],
+      "offset": 0,
+      "bytes": 54325
+    },
+    {
+      "index": 1,
+      "file": "extracted_assets/images/hkeshiki/hkeshiki_01.png",
+      "dims": [
+        640,
+        400
+      ],
+      "offset": 54325,
+      "bytes": 52285
+    },
+    {
+      "index": 2,
+      "file": "extracted_assets/images/hkeshiki/hkeshiki_02.png",
+      "dims": [
+        640,
+        400
+      ],
+      "offset": 106610,
+      "bytes": 54104
+    },
+    {
+      "index": 3,
+      "file": "extracted_assets/images/hkeshiki/hkeshiki_03.png",
+      "dims": [
+        640,
+        400
+      ],
+      "offset": 160714,
+      "bytes": 47817
+    }
+  ]
+}

@@ -339,10 +339,8 @@ void hal_video_draw_kanji_16x16(int x, int y, uint8_t s1, uint8_t s2, uint8_t co
     int ku = 0, ten = 0;
     sjis_to_kuten(s1, s2, &ku, &ten);
     int glyph_idx = -1;
-    if (ku >= 16) {
-        glyph_idx = 1522 + (ku - 16) * 94 + (ten - 1);
-    } else if (ku >= 1) {
-        glyph_idx = 18 + (ku - 1) * 94 + (ten - 1);
+    if (ku >= 1) {
+        glyph_idx = 112 + (ku - 1) * 94 + (ten - 1);
     }
     if (glyph_idx < 0 || (size_t)(glyph_idx * 32 + 32) > s_jis_size) return;
 
