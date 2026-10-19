@@ -47,6 +47,8 @@ static YphzKey translate_key(SDL_Keycode sym) {
         case SDLK_t:            return YPHZ_KEY_T;
         case SDLK_l:            return YPHZ_KEY_L;
         case SDLK_i:            return YPHZ_KEY_I;
+        case SDLK_F5:           return YPHZ_KEY_F5;
+        case SDLK_F9:           return YPHZ_KEY_F9;
         case SDLK_LEFTBRACKET:  return YPHZ_KEY_LEFTBRACKET;
         case SDLK_RIGHTBRACKET: return YPHZ_KEY_RIGHTBRACKET;
         case SDLK_1:            return YPHZ_KEY_1;

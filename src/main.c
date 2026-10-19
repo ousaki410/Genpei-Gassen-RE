@@ -12,6 +12,7 @@
 #include "kassen.h"
 #include "ai.h"
 #include "event.h"
+#include "save.h"
 #include "npk.h"
 #include "scenario.h"
 
@@ -180,6 +181,12 @@ static void draw_wrapped_sjis(int x, int y, int max_w, int line_h,
 #define SJIS_LEAD      "\x93\x9d\x97\xa6"                   // 統率
 #define SJIS_WAR       "\x95\x90\x97\xcd"                   // 武力
 #define SJIS_INTEL     "\x92\x6d\x96\x64"                   // 知謀
+
+// 子任务 8: save / load feedback.
+#define SJIS_SAVE      "\x95\xdb\x91\xb6"                   // 保存
+#define SJIS_LOAD      "\x95\x9c\x8c\xb3"                   // 復元
+#define SJIS_DONE      "\x8a\xae\x97\xb9"                   // 完了
+#define SJIS_FAIL      "\x8e\xb8\x94\x73"                   // 失敗
 
 #define CMD_MENU_X        496
 #define CMD_MENU_Y        40
@@ -1007,6 +1014,12 @@ int main(int argc, char *argv[]) {
     memset(&ai_report, 0, sizeof(ai_report));
     int  pending_idx = 0;          // next queued AI attack on the player to play
 
+    // 子任务 8: native save slots (F5 / F9, --save / --load).
+    const char *save_path = NULL;              // --save <path> (written at exit)
+    const char *load_path = NULL;              // --load <path> (read at startup)
+    const char *save_slot = "Savedata.sav";    // F5/F9 slot path (--save-slot)
+    bool        dump_state = false;            // --dump-state : print state hash
+
     // Headless mouse-click injection: --click x,y[@frame], repeatable / ';'-list.
     ClickEvent clicks[MAX_CLICKS];
     int click_count = 0;
@@ -1133,6 +1146,14 @@ int main(int argc, char *argv[]) {
             } else {
                 fprintf(stderr, "[WARN] bad --defend '%s' (want from,to)\n", defend_spec);
             }
+        } else if (strcmp(argv[i], "--save") == 0 && i + 1 < argc) {
+            save_path = argv[++i];
+        } else if (strcmp(argv[i], "--load") == 0 && i + 1 < argc) {
+            load_path = argv[++i];
+        } else if (strcmp(argv[i], "--save-slot") == 0 && i + 1 < argc) {
+            save_slot = argv[++i];
+        } else if (strcmp(argv[i], "--dump-state") == 0) {
+            dump_state = true;
         } else if (strcmp(argv[i], "--shot-frame") == 0 && i + 1 < argc) {
             shot_frame = atoi(argv[++i]);
             if (shot_frame < 0) shot_frame = 0;
@@ -1359,6 +1380,19 @@ int main(int argc, char *argv[]) {
     if (player_faction < 0) player_faction = 0;
     TurnState g_turn;
     turn_init(&g_turn, &g_scenario, player_faction);
+
+    // 子任务 8: --load restores a snapshot before any headless commands run.
+    if (load_path) {
+        if (load_game(load_path, &g_scenario, &g_turn)) {
+            printf("[LOAD] read %s (%zu bytes) hash=0x%08x\n",
+                   load_path, save_snapshot_size(),
+                   save_state_hash(&g_scenario, &g_turn));
+            player_faction = g_turn.player_faction;
+        } else {
+            fprintf(stderr, "[ERROR] --load failed: %s\n", load_path);
+        }
+    }
+
     show_cmd_menu = false;
     if (show_castle_card && cur_castle >= 0 && cur_castle < g_scenario.num_castles) {
         show_cmd_menu = (g_scenario.castles[cur_castle].faction_id == player_faction);
@@ -1684,6 +1718,45 @@ int main(int argc, char *argv[]) {
                            pb.from, pb.to, pb.officer);
                     battle_enter(&g_scenario, pb.from, pb.to, pb.officer,
                                  kao_data, kao_size, officer_offsets, true);
+                }
+            }
+        }
+
+        // --- 保存 / 復元 (F5 / F9) ----------------------------------------
+        if (!g_battle_mode && !g_ending_mode && !g_event_mode &&
+            !gallery_mode && !show_dialog) {
+            if (key == YPHZ_KEY_F5) {
+                bool ok = save_game(save_slot, &g_scenario, &g_turn);
+                printf("[SAVE] %s %s (%zu bytes) hash=0x%08x\n",
+                       ok ? "wrote" : "FAILED", save_slot,
+                       save_snapshot_size(),
+                       save_state_hash(&g_scenario, &g_turn));
+                show_dialog = true;
+                dlg_custom = true;
+                dlg_officer = -1;
+                snprintf(dlg_custom_text, sizeof(dlg_custom_text),
+                         "%s %s\n%.100s", SJIS_SAVE,
+                         ok ? SJIS_DONE : SJIS_FAIL, save_slot);
+            } else if (key == YPHZ_KEY_F9) {
+                bool ok = load_game(save_slot, &g_scenario, &g_turn);
+                printf("[LOAD] %s %s hash=0x%08x\n",
+                       ok ? "read" : "FAILED", save_slot,
+                       save_state_hash(&g_scenario, &g_turn));
+                show_dialog = true;
+                dlg_custom = true;
+                dlg_officer = -1;
+                snprintf(dlg_custom_text, sizeof(dlg_custom_text),
+                         "%s %s\n%.100s", SJIS_LOAD,
+                         ok ? SJIS_DONE : SJIS_FAIL, save_slot);
+                if (ok) {
+                    if (cur_castle < 0 || cur_castle >= g_scenario.num_castles)
+                        cur_castle = 0;
+                    show_cmd_menu = show_castle_card &&
+                        (g_scenario.castles[cur_castle].faction_id ==
+                         g_turn.player_faction);
+                    update_window_title(cur_officer, use_mask, bg_mode, map_mode,
+                                        camera_x, cur_scenario, &g_scenario,
+                                        cur_castle);
                 }
             }
         }
@@ -2588,6 +2661,22 @@ int main(int argc, char *argv[]) {
     free_decoded_image(&gallery_img);
     npk_free(&gallery_npk);
     free_decoded_image(&s_battle_bg);
+    // 子任务 8: write the requested snapshot / state digest at exit.
+    if (save_path) {
+        if (save_game(save_path, &g_scenario, &g_turn)) {
+            printf("[SAVE] wrote %s (%zu bytes) hash=0x%08x\n",
+                   save_path, save_snapshot_size(),
+                   save_state_hash(&g_scenario, &g_turn));
+        } else {
+            fprintf(stderr, "[ERROR] --save failed: %s\n", save_path);
+        }
+    }
+    if (dump_state) {
+        printf("[STATE] date=%d/%d faction=%d hash=0x%08x\n",
+               g_turn.year, g_turn.month, g_turn.player_faction,
+               save_state_hash(&g_scenario, &g_turn));
+    }
+
     free_decoded_image(&s_battle_duel);
     free_decoded_image(&s_battle_kao[0]);
     free_decoded_image(&s_battle_kao[1]);

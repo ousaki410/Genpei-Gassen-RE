@@ -60,6 +60,7 @@ SDL_VIDEODRIVER=dummy ./bin/yphz_engine --frames 5 --screenshot /tmp/shot.bmp
 │   ├── kassen.h            #   合战状态机（战术/一騎討/夺城/守城）
 │   ├── ai.h                #   非玩家势力 AI（内政 + 战略出阵报告）
 │   ├── event.h             #   历史事件表（年月 / 落城 → Mainevt 块）
+│   ├── save.h              #   原生存档槽（Scenario + TurnState 快照）
 │   └── sdl_compat.h        #   SDL2/SDL3 唯一引入点
 ├── src/                    # 引擎源码（C11）
 │   ├── main.c              #   入口：CLI、资源装载、双模式渲染主循环
@@ -71,11 +72,13 @@ SDL_VIDEODRIVER=dummy ./bin/yphz_engine --frames 5 --screenshot /tmp/shot.bmp
 │   ├── kassen.c            #   合战：战术结算、一騎討、夺城、天下統一判定
 │   ├── ai.c                #   全势力 AI 月度决策（内政 + 出阵 + 守城触发）
 │   ├── event.c             #   历史事件表（源平合战年表 + 落城触发）
+│   ├── save.c              #   原生存档槽读写 + 状态哈希
 │   ├── npk.c               #   NPK016 通用容器索引（按需解压单块）
 │   └── scenario.c          #   Sndata.gp 剧本解析 + 静态历史数据表
 ├── tools/                  # Python 逆向工具（Pillow）
 │   ├── probe_gp_files.py   #   全部 53 个数据文件的格式/维度分类
 │   ├── analyze_raw_and_exe.py  # EXE 内嵌资产目录提取 + 裸图尺寸推导
+│   ├── probe_savedata.py   #   Savedata.gp 存档槽结构侦察（对比 Sndata.gp）
 │   └── extractor/          #   各格式的解码参考实现
 │       ├── extract_images.py   #   NPK016/NUP4 图像批量解包
 │       ├── extract_kaodata.py  #   90 名武将立绘解包
@@ -154,6 +157,10 @@ cmake --build build -j
 | `--defend <from,to>` | — | — | 无头**守城战**：`from` 城（AI 势力）进攻相邻的玩家城 `to`，玩家作为守方应战（`1`/`2`/`3`/`4` = 突撃/斉射/一騎討/籠城） |
 | `--ai-step` | — | — | 无头推进一个月并运行**全势力 AI**（内政 + 战略出阵），打印 `[AI]` 决策日志；AI 攻打玩家城池时自动切入守城战（可由 `--battle-plan` 驱动） |
 | `--trigger-event <n>` | — | — | 立即播放第 n 个历史事件（0..12）：`Mainevt.gp` 对应块 CG + `Message.gp` 台词，配合 `--screenshot` 无头验证 |
+| `--save <path>` | — | — | 运行结束时把完整状态（`Scenario` + `TurnState`）写入原生存档槽 |
+| `--load <path>` | — | — | 启动时读取原生存档槽（在无头命令之前恢复），随后可继续内政/出陣 |
+| `--save-slot <path>` | — | `Savedata.sav` | 游戏内 `F5`/`F9` 使用的存档槽路径 |
+| `--dump-state` | — | — | 退出时打印状态摘要与 FNV-1a 哈希（`[STATE] ... hash=0x...`），用于存档往返比对 |
 | `--shot-frame <n>` | — | `2` | 指定 `--screenshot` 在第 n 帧抓图（便于截取合战过程/胜利结算/夺城后的地图/事件 CG） |
 | `--unified` | — | — | 调试用：把 39 城全部划归玩家势力并立即播放「天下統一」结局 CG（用于无头验证） |
 | `--end-turn <n>` | — | `0` | 无头连续推进 n 个月（跨年进位），并弹出最后一月的收入结算框 |
@@ -231,6 +238,18 @@ SDL_VIDEODRIVER=dummy ./bin/yphz_engine --map \
 
 # 天下統一结局 CG（强制统一）
 SDL_VIDEODRIVER=dummy ./bin/yphz_engine --unified --frames 2 --screenshot /tmp/ending.bmp
+
+# 子任务 8：存档 / 读档（内政/换月 → 保存 → 重启 → 读取，状态哈希一致）
+SDL_VIDEODRIVER=dummy ./bin/yphz_engine --do-cmd develop --end-turn 1 \
+    --save /tmp/save.sav --dump-state --frames 2
+SDL_VIDEODRIVER=dummy ./bin/yphz_engine --load /tmp/save.sav --dump-state --frames 2
+# 夺城后保存 / 读取（战果一并持久化）
+SDL_VIDEODRIVER=dummy ./bin/yphz_engine --attack 30,29 --battle-plan volley,charge,charge \
+    --frames 9 --save /tmp/save2.sav --dump-state
+SDL_VIDEODRIVER=dummy ./bin/yphz_engine --load /tmp/save2.sav --dump-state --frames 2
+
+# 原版 Savedata.gp 结构侦察（只读）
+python3 tools/probe_savedata.py
 ```
 
 ### 键盘操作
@@ -238,6 +257,8 @@ SDL_VIDEODRIVER=dummy ./bin/yphz_engine --unified --frames 2 --screenshot /tmp/e
 | 模式 | 按键 | 功能 |
 |---|---|---|
 | 通用 | `M` | 战略地图 ⇄ 武将立绘 切换 |
+| 通用 | `F5` | 保存到存档槽（默认 `Savedata.sav`，可用 `--save-slot` 指定） |
+| 通用 | `F9` | 从存档槽读取并恢复游戏状态 |
 | 通用 | `L` | 打开/关闭 NPK016 画廊（Logo / 事件 CG / 家宝 / 合战景等 8 个包） |
 | 通用 | `I` | 直接打开家宝图标画廊（`Mainitem.gp`，19 × 64×64） |
 | 通用 | `ESC` | 依次返回：结局画面 → 画廊 → 移动/出陣目标列表 → 结算对话框 → 武将一览 → 指令菜单 → 城池情报卡 → 退出 |
@@ -372,7 +393,7 @@ python3 tools/probe_gp_files.py --csv        # 表格导入
 | `Music.gp` | 44640 | raw | u16[22 0 0 1600] zero=5.3% H=6.53b/B unique=255 \| FM/PMD music data (not parsed yet) |
 | `Opendat.gp` | 853233 | raw | u16[0 768 517 2826] zero=6.4% H=6.88b/B unique=256 \| opening / prologue data (not parsed yet) |
 | `Opmusic.gp` | 3760 | raw | u16[0 0 608 608] zero=2.8% H=6.27b/B unique=167 \| FM/PMD opening music (not parsed yet) |
-| `Savedata.gp` | 434030 | raw | u16[1180 266 0 48533] zero=13.0% H=6.93b/B unique=256 \| save-game table (not parsed yet) |
+| `Savedata.gp` | 434030 | raw | u16[1180 266 0 48533] zero=13.0% \| **10 × 43403 B 存档槽**：u16 LE 年@0 + 月@2 + 标志@3，18 B 处第二份年月头，24 B 起势力表（`01 00..0e 00`）；槽 0/1/2 = 1180/10、1183/1、1184/10，槽 3–9 为未用模板（见 `tools/probe_savedata.py`） |
 | `Sndata.gp` | 165064 | raw | u16[1180 521 0 1] zero=36.2% H=5.33b/B unique=256 \| scenario table: 4 x 41266 B (officers/castles/conns) |
 | `Disk-1.gp` | 18 | text | 源平合戦 DISK-1 |
 | `Disk-2.gp` | 18 | text | 源平合戦 DISK-2 |
@@ -446,8 +467,9 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
   其中 3 个为 NPK016 容器、6 个为裸图块。
 - **音频（3 个 raw）**：`Music.gp` / `Opmusic.gp` / `Edmusic.gp` 无已知 Magic，
   需结合 `Fmdrv.com` 驱动反汇编确定 FM/PMD 指令流。
-- **数据表（4 个 raw）**：`Sndata.gp`（已解析）、`Savedata.gp`（存档）、
-  `Opendat.gp`（片头脚本）、`Enddat.gp`（结局脚本）。
+- **数据表（4 个 raw）**：`Sndata.gp`（已解析）、`Savedata.gp`（10 × 43403 B 存档槽，
+  结构与 `Sndata.gp` 的 6 B 头 + 势力表布局不同、内部偏移漂移，故引擎改用自描述原生
+  快照）、`Opendat.gp`（片头脚本）、`Enddat.gp`（结局脚本）。
 
 ### 下一步优先级
 
@@ -558,6 +580,16 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
 - `event_match_castle_fall()`：落城事件 —— 平泉（38）陷落、屋島（6）陷落。
 - 事件触发后主循环叠加 `Mainevt.gp` CG + `Message.gp` 台词（按关键词检索）。
 
+**`src/save.c`（130 行）+ `include/save.h` — 原生存档槽（子任务 8）**
+- 格式：`magic "YPHZSNAP"` + `version` + 剧本号/年月/城池数/武将数 + 39 ×
+  `ScenarioCastle` + 401 × `ScenarioOfficer` + `TurnState`（势力/年月/401 行动位）。
+  单槽 63270 字节，`#pragma pack(1)`，小端，自描述。
+- `save_game()` / `load_game()`：只覆盖可变状态，`title_sjis` 与静态势力/坐标表仍来自
+  `Sndata.gp`；校验 magic/版本/数量，截断或损坏的文件安全拒绝。
+- `save_state_hash()`：对规范快照做 FNV-1a 32-bit 摘要，`--dump-state` 用它做往返比对。
+- 游戏内 `F5` 保存 / `F9` 读取（默认槽 `Savedata.sav`，可用 `--save-slot` 指定），
+  并在底部对话框显示「保存/復元 完了/失敗」。
+
 **`src/npk.c`（64 行）— NPK016 通用容器访问**
 - `npk_load()` 扫描文件中全部 `NPK016` magic 并记录块偏移；`npk_decode()` 按块
   调用 `nup4_decompress_block()`；`npk_free()` 释放容器。
@@ -615,7 +647,8 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
 `hal_video.h`（`ColorRGBA` + HAL/字体 API）、`input.h`（`YphzKey`/`InputState`）、
 `message.h`（`MessageFile`/`MessageEntry`）、`turn.h`（`TurnState`/`TurnCommand`/
 `TurnResult`）、`kassen.h`（`KassenState`/`KassenCommand`）、`ai.h`（`AiReport`/
-`AiPendingBattle`）、`event.h`（`HistoricalEvent`）、`npk.h`（`NpkFile`）、
+`AiPendingBattle`）、`event.h`（`HistoricalEvent`）、`save.h`（`save_game`/
+`load_game`）、`npk.h`（`NpkFile`）、
 `sdl_compat.h`（SDL2/SDL3 引入切换）。
 所有结构体 `#pragma pack(push,1)`。
 
@@ -628,10 +661,11 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
 | `extract_kaodata.py` | 201 | Kaodata 0x728 解码（对照实现），导出索引 PNG / 透明 RGBA PNG / 10x9 立绘表 + manifest |
 | `extract_palette.py` | 76 | `Mainpal.pld`/`Losepal.pld`（4 bank × 16 色，BGR）→ JSON + 色板 PNG |
 
-`tools/` 根目录另有两个独立侦察脚本（非本目录）：`probe_gp_files.py`（285 行；53 个资产
-文件的 Magic/格式侦察，表格 + JSON + CSV）与 `analyze_raw_and_exe.py`（459 行；提取
+`tools/` 根目录另有三个独立侦察脚本（非本目录）：`probe_gp_files.py`（285 行；53 个资产
+文件的 Magic/格式侦察，表格 + JSON + CSV）、`analyze_raw_and_exe.py`（459 行；提取
 `Main.exe`/`Open.exe`/`End.exe` 内嵌资产目录，并对 11 个裸图按 4bpp/8bpp/1bpp 推导
-`(w,h,count)`，自动识别 `Hchikei.gp` 的 100×100 图块地图特例）。
+`(w,h,count)`，自动识别 `Hchikei.gp` 的 100×100 图块地图特例）与 `probe_savedata.py`
+（10 × 43403 B 存档槽头/势力表/鎌倉偏移侦察，并对比 `Sndata.gp`）。
 
 ### 二、已跑通模块 ✅
 
@@ -654,6 +688,8 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
   `kassen_auto_resolve()` 自动结算（`〇〇軍が××城を攻略！`），AI 进攻玩家则切入
   **守城战**（玩家守方，突撃/斉射/一騎討/籠城）。
 - 历史事件（子任务 7）：按年月或落城触发 `Mainevt.gp` CG + `Message.gp` 台词叠加层。
+- 存档/读档（子任务 8）：`F5`/`F9` 与 `--save`/`--load` 使用 63270 B 原生快照
+  （`Scenario` + `TurnState`），`--dump-state` 哈希验证往返完全一致。
 
 ### 三、尚未实现 / TODO ⛔
 
@@ -664,7 +700,7 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
 | **合战系统** | ✅ 基础闭环已完成：战场背景、双方立绘与兵力/士気/城防、突撃/斉射/一騎討/退却、一騎討特写、夺城/势力转移、天下統一结局；**AI 攻方自动出招、玩家守城战、AI vs AI 自动推演** 已完成；仍无部队编成与战术地图 |
 | **势力 AI** | ✅ 已完成：每月按势力执行内政（徴兵/徴税/開発）与战略出阵（兵力优势判定 + 概率出兵），确定性随机可复现 |
 | **历史事件** | ✅ 年月表（1180/9～1185/3 六个源平合战节点）与落城事件（平泉/屋島）触发 `Mainevt.gp` CG + `Message.gp` 台词；`Mainevt.gp` 事件脚本引擎仍未逆向 |
-| **存档** | `Savedata.gp` 未解析/未写入 |
+| **存档** | ✅ `Savedata.gp` 结构已侦察（10 × 43403 B：年/月头 + 势力表 + 漂移的场景快照）；引擎改用自描述原生槽（`Scenario` + `TurnState`，63270 B），支持 `F5`/`F9` 与 `--save`/`--load`，往返状态哈希一致；写入原版 `Savedata.gp` 字节格式仍待完成 |
 | **音频** | **完全未实现**：`Music.gp`/`Opmusic.gp`/`Edmusic.gp` 未解析，FM 驱动 `Fmdrv.com` 未逆向，无 MIDI/音效 |
 | **游戏内文本** | ✅ C 引擎已加载 `Message.gp`（LS11，5 条 / 2350 句）并在底部弹框显示；`Mainevt.gp` 事件脚本逻辑仍未逆向 |
 | **未解析的数据文件** | `Maincmd.gp`、`Mainobj.gp`、`Kisetsu.gp`、`Montage.gp`、`Opendat.gp`、`Enddat.gp`、`Disk-*.gp` 等裸格式未解压；`Mainitem.gp` 已可画廊预览但未接入数值系统 |
@@ -805,6 +841,31 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
   - `--trigger-event 2`：`Mainevt.gp` block 2（160×128 倶利伽羅峠）渲染成功；
   - 端到端 `--click '560,231@1;r300,300@3'`：`終了` → AI → 结算框 → 右键关闭 →
     历史事件 →（自动过场）→ 守城战，全链路 `[AI]`/`[EVENT]`/`[KASSEN]` 日志连贯。
+
+**子任务 8 — 存档 / 读档（`Savedata.gp` 侦察 + 原生快照）— ✅ 已完成（第一部分）**
+- **原版 `Savedata.gp` 结构侦察**（`tools/probe_savedata.py`，只读）：
+  - 434030 B = **10 × 43403 B** 定长槽；槽头 `u16 LE 年@0`、`u8 月@2`、`u8 标志@3`，
+    18 B 处有第二份年月头；24 B 起为 15 项势力表（`01 00 02 00 … 0e 00 ff ff`）；
+  - 槽 0/1/2 分别保存 **1180/10、1183/1、1184/10**，槽 3–9 为未使用模板（年字段非法）；
+  - 与 `Sndata.gp` 对比：`Sndata` 是 6 B 头 + 偏移 6 的势力表，而存档在偏移 24；
+    且 `鎌倉` 在存档中位于 33175、`Sndata` 中位于 31038（**+2137 漂移**），说明内部
+    字段偏移并非简单平移，原版槽**无法**直接喂给现有 `Sndata` 解析器。
+- **原生快照**（`include/save.h` / `src/save.c`）：`magic "YPHZSNAP"` + 版本 +
+  剧本号/年月/数量 + 39 × `ScenarioCastle` + 401 × `ScenarioOfficer` + `TurnState`，
+  单槽 **63270 B**、`#pragma pack(1)`、小端自描述；读取时只覆盖可变状态，静态表仍来自
+  `Sndata.gp`，并校验 magic/版本/数量。
+- **游戏内**：`F5` 保存 / `F9` 读取（默认槽 `Savedata.sav`，可用 `--save-slot <path>`），
+  底部对话框显示「保存/復元 完了/失敗」，成功后同步指令菜单与窗口标题。
+- **CLI**：`--save <path>`（退出时写槽）、`--load <path>`（启动时读槽）、
+  `--dump-state`（打印 `[STATE] ... hash=0x...`）。
+- 验收（`SDL_VIDEODRIVER=dummy`，零警告）：
+  - `--do-cmd develop --end-turn 1 --save /tmp/a.sav --dump-state --frames 2`
+    → `[SAVE] wrote … hash=0xa130fe14`；重启 `--load /tmp/a.sav --dump-state`
+    → **同一哈希 0xa130fe14**（内政 + 换月往返 100% 一致）；
+  - `--attack 30,29 --battle-plan volley,charge,charge --frames 9 --save /tmp/b.sav
+    --dump-state` → `hash=0x93fe69c4`；`--load /tmp/b.sav --dump-state` → 同哈希
+    （夺城结果一并持久化）；
+  - 损坏/缺失存档被安全拒绝（截断、magic 不符、无法打开均打印 `[ERROR]` 后继续）。
 
 补充（非本期）：**音频**（先逆向 `Fmdrv.com` + `Music.gp` 的 FM 音源格式）、
 **存档**（`Savedata.gp`）与**战略行军路线**（跨城出兵）仍属后续方向。

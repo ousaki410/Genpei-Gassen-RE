@@ -142,6 +142,7 @@ add_executable(yphz_engine
     src/kassen.c
     src/ai.c
     src/event.c
+    src/save.c
     src/npk.c)
 
 target_include_directories(yphz_engine PRIVATE
