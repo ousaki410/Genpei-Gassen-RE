@@ -2,8 +2,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
-#include <SDL2/SDL.h>
 
+#include "sdl_compat.h"
 #include "hal_video.h"
 #include "decompress.h"
 #include "scenario.h"

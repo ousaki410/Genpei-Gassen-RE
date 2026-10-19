@@ -8,9 +8,17 @@
 #define PC98_WIDTH  640
 #define PC98_HEIGHT 400
 
+// DOS / PC-98 16-bit compact memory layout: byte-level packing, no compiler
+// padding. Every struct in this project is laid out with #pragma pack(push, 1)
+// so that host-side records match the original little-endian DOS images
+// byte-for-byte.
+#pragma pack(push, 1)
+
 typedef struct {
     uint8_t r, g, b, a;
 } ColorRGBA;
+
+#pragma pack(pop)
 
 bool hal_video_init(const char *title, int window_scale);
 void hal_video_shutdown(void);

@@ -5,6 +5,9 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+// DOS / PC-98 16-bit compact memory layout: byte-level packing, no padding.
+#pragma pack(push, 1)
+
 typedef struct {
     int width;
     int height;
@@ -12,6 +15,8 @@ typedef struct {
     uint8_t *mask;         // Optional 8-bit mask (for Kaodata: 0=opaque, 7=trans)
     uint16_t palette[16];  // Raw PC-98 palette if present in header
 } ImageDecoded;
+
+#pragma pack(pop)
 
 // Native NPK016 / NUP4 decompressor (from Open.exe / Grpdrv.exe)
 bool nup4_decompress_block(const uint8_t *data, size_t data_len, size_t offset, ImageDecoded *out_img, size_t *out_consumed);

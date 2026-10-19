@@ -8,6 +8,13 @@
 #define MAX_CASTLES  39
 #define MAX_SCENARIOS 4
 
+// ---------------------------------------------------------------------------
+// DOS / PC-98 16-bit compact memory layout: byte-level packing, no compiler
+// padding. These records are parsed out of the original little-endian DOS
+// images and must mirror the on-disk layout byte-for-byte.
+// ---------------------------------------------------------------------------
+#pragma pack(push, 1)
+
 // 15 Historical Daimyos / Factions in Genpei Kassen
 typedef struct {
     int id;
@@ -70,6 +77,8 @@ typedef struct {
     ScenarioOfficer officers[MAX_OFFICERS];
     int num_officers;
 } Scenario;
+
+#pragma pack(pop)
 
 // Load scenario 0..3 from Sndata.gp
 bool scenario_load(const char *sndata_path, int scenario_idx, Scenario *out_sc);
