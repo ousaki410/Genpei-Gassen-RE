@@ -29,6 +29,12 @@ __pycache__/
 stderr.txt
 stdout.txt
 
+# --- Test screenshots / rendered output (engine --screenshot, tools) -------
+*.bmp
+*.png
+*.jpg
+*.jpeg
+
 # --- DOSBox emulator shell -------------------------------------------------
 dosbox.exe
 dosbox.conf
