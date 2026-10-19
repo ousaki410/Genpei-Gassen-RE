@@ -53,11 +53,13 @@ SDL_VIDEODRIVER=dummy ./bin/yphz_engine --frames 5 --screenshot /tmp/shot.bmp
 ├── include/                # 引擎公共头文件（DOS 紧凑布局结构体）
 │   ├── decompress.h        #   解压器 API + ImageDecoded
 │   ├── hal_video.h         #   视频/字体 HAL API + ColorRGBA
+│   ├── input.h             #   统一输入层 API（InputState / YphzKey）
 │   ├── scenario.h          #   剧本数据结构（武将/城池/势力）
 │   └── sdl_compat.h        #   SDL2/SDL3 唯一引入点
 ├── src/                    # 引擎源码（C11）
 │   ├── main.c              #   入口：CLI、资源装载、双模式渲染主循环
 │   ├── hal_video.c         #   SDL2 视频/软件帧缓冲/调色板/JIS 字体
+│   ├── input.c             #   统一输入层（SDL 键盘/鼠标事件 → InputState）
 │   ├── decompress.c        #   NPK016/NUP4 与 Kaodata 0x728 解压器
 │   └── scenario.c          #   Sndata.gp 剧本解析 + 静态历史数据表
 ├── tools/extractor/        # Python 逆向工具（Pillow）
@@ -126,16 +128,23 @@ cmake --build build -j
 | `--scenario <n>` | `-s` | `0` | 剧本，接受 `1..4` 或 `0..3`（1180/1183/1184/1185） |
 | `--officer <n>` | `-o` | `0` | 起始武将编号（0..400） |
 | `--castle <n>` | `-c` | `30` | 起始城池编号（0..38，默认鎌倉） |
+| `--select-castle <n>` | — | — | 直接以地图模式启动，选中第 n 城并展开其情报卡（配合 `--frames`/`--screenshot` 做无头截屏回归） |
 | `--map` | `-m` | 关 | 直接以战略地图模式启动 |
 | `--frames <n>` | — | `0` | 运行 n 帧后自动退出（`0` = 无限，用于回归/无头测试） |
 | `--screenshot <path>` | — | — | 第 2 帧导出 640x400 BMP 并退出（隐含 `--frames 10`） |
+
+无头回归示例：
+
+```bash
+SDL_VIDEODRIVER=dummy ./bin/yphz_engine --select-castle 30 --frames 5 --screenshot /tmp/c30.bmp
+```
 
 ### 键盘操作
 
 | 模式 | 按键 | 功能 |
 |---|---|---|
 | 通用 | `M` | 战略地图 ⇄ 武将立绘 切换 |
-| 通用 | `ESC` | 退出 |
+| 通用 | `ESC` | 地图：关闭城池情报卡；无卡时（或武将模式）退出 |
 | 地图 | `1`–`4` | 切换剧本 |
 | 地图 | `[` / `]` | 上一 / 下一城池 |
 | 地图 | `O` / `Enter` | 查看当前城城主（跳转立绘） |
@@ -147,6 +156,21 @@ cmake --build build -j
 | 武将 | `F` | 跳到下一名拥有专属立绘的武将 |
 | 武将 | `Space` | 立绘遮罩（透明）开关 |
 | 武将 | `TAB` | 切换背景（纯黑 / 军议大殿 / 野战军营） |
+
+### 鼠标操作（战略地图）
+
+| 操作 | 功能 |
+|---|---|
+| 左键点击城池旗标 | 命中测试选中该城（`camera_x` + 屏幕坐标 → 1696x360 世界坐标）并展开情报卡 |
+| 左键点击空白处拖拽 | 拖动平移全景地图（地形跟随指针） |
+| 指针靠近窗口左右边缘 | 自动平滑卷动地图 |
+| 右键点击 | 关闭城池情报卡 |
+
+> 输入实现：`src/input.c` 独占所有 `SDL_PollEvent`/`SDL_GetMouseState` 调用，向主循环
+> 输出一份 `InputState`（键盘边沿、逻辑坐标 640x400 的鼠标位置/位移、左右键边沿）。
+> 窗口 ⇄ 逻辑坐标换算与鼠标焦点查询由 `hal_video_window_to_logical()` /
+> `hal_video_has_mouse_focus()` 提供；原先未被调用的 `hal_video_poll_event()` 死代码
+> 已删除。
 
 ---
 
@@ -167,7 +191,7 @@ python3 tools/extractor/extract_palette.py   # Mainpal/Losepal -> extracted_asse
 
 ### 一、源码文件职责与已实现功能
 
-**`src/main.c`（674 行）— 入口与渲染主循环**
+**`src/main.c`（760 行）— 入口与渲染主循环**
 - CLI 参数解析（见上表）+ `YPHZ_DATA_DIR` 环境变量。
 - 资源装载 `load_file()`：`Mainpal.pld`、`JIS.FNT`/`FONT.CHR`、`Main.exe`（读
   `0x4D3BB` 处 90 个立绘偏移表）、`Kaodata.gp`、`Hikback.gp`、`Maincmd2.gp`、
@@ -177,12 +201,14 @@ python3 tools/extractor/extract_palette.py   # Mainpal/Losepal -> extracted_asse
 - **战略地图模式**：地图水平滚动（`camera_x`）、39 城势力旗标、选中城金色准星
   动画、顶部/底部状态条、城池情报卡（势力/城主/兵力/防御/士气/训练/石高/兵糧/
   街道接续）。
+- **地图鼠标交互**：左键点击旗标命中测试选城（屏幕坐标 + `camera_x` → 世界坐标）、
+  空白处拖拽平移、指针贴近窗口左右边缘自动卷动、右键关闭情报卡。
 - **武将立绘模式**：401 名武将逐个浏览、立绘（含遮罩透明）、3 种背景、完整属性
   面板（姓名/假名/年龄/忠节/兵力/武力/知才/优雅/弓術/兵質/身份/势力/居城）、
   16 色调色板色块。
 - 截图导出（阶段帧 BMP）、固定 ~60 FPS 主循环。
 
-**`src/hal_video.c`（378 行）— 视频 / 字体 HAL**
+**`src/hal_video.c`（377 行）— 视频 / 字体 HAL**
 - SDL2 窗口/渲染器/纹理初始化（640x400 逻辑分辨率，nearest 缩放，加速失败回退软件）。
 - 软件 8-bit 索引帧缓冲 `s_vram` → 32-bit RGBA 调色板查找 → `SDL_UpdateTexture`。
 - 调色板 API：`set_palette_entry`、`load_pld_bank`（PC-98 GBR 通道序）。
@@ -192,7 +218,17 @@ python3 tools/extractor/extract_palette.py   # Mainpal/Losepal -> extracted_asse
 - **JIS 字体子系统**：`load_fonts`（`JIS.FNT`+`FONT.CHR`）、`draw_char_8x16`
   （半角）、SJIS→区点（kuten）换算、`draw_kanji_16x16`（`112 + (ku-1)*94 + (ten-1)`
   索引 32 字节字形）、`draw_text_sjis`（半角/全角混排）。
-- `poll_event()`：已实现但**当前未被 `main.c` 使用**（见 TODO）。
+- 输入支撑 helper：`window_to_logical()`（`SDL_RenderWindowToLogical`，窗口 → 640x400
+  逻辑坐标）、`has_mouse_focus()`（`SDL_WINDOW_MOUSE_FOCUS`）。原先未被调用的
+  `poll_event()` 死代码已移除。
+
+**`src/input.c`（114 行）— 统一输入层**
+- `input_poll(InputState*)`：一次排空全部 SDL 事件，向主循环输出键盘边沿
+  （抽象为 `YphzKey`）、鼠标逻辑坐标 640x400 位置与帧间位移、左右键按下/边沿。
+- 键盘只取 `SDL_KEYDOWN` 非重复事件；鼠标位置/按键用 `SDL_GetMouseState()` 采样，
+  即使某帧无 motion 事件也保持正确。
+- `mouse_inside` 同时要求窗口具有鼠标焦点，避免无头（`SDL_VIDEODRIVER=dummy`）时
+  指针停在 (0,0) 误触发边缘卷动。
 
 **`src/decompress.c`（301 行）— 解压器**
 - **NPK016 / NUP4**（`nup4_decompress_block`）：LSB-first 位流 + 1600B（5 扫描行）
@@ -211,7 +247,8 @@ python3 tools/extractor/extract_palette.py   # Mainpal/Losepal -> extracted_asse
 
 **`include/`**：`scenario.h`（`FactionDef`/`ScenarioOfficer`/`ScenarioCastle`/
 `Scenario`）、`decompress.h`（`ImageDecoded`）、`hal_video.h`（`ColorRGBA` + HAL/字体
-API）、`sdl_compat.h`（SDL2/SDL3 引入切换）。所有结构体 `#pragma pack(push,1)`。
+API）、`input.h`（`YphzKey`/`InputState`）、`sdl_compat.h`（SDL2/SDL3 引入切换）。
+所有结构体 `#pragma pack(push,1)`。
 
 **`tools/extractor/`（Python 参考实现）**
 
@@ -232,12 +269,13 @@ API）、`sdl_compat.h`（SDL2/SDL3 引入切换）。所有结构体 `#pragma p
 - 全景地图：`Mainmap.gp` 20 块拼接为 1696x360 并滚动渲染 + 旗标/准星/状态条。
 - 武将立绘：90 专属立绘 + 通用立绘展示与属性面板。
 - 城池情报卡、BMP 截图、CMake 构建（内置 SDL2）。
+- 统一输入层：键盘（`YphzKey`）+ 鼠标（点击选城 / 拖拽 / 边缘卷动 / 右键关闭情报卡）。
 
 ### 三、尚未实现 / TODO ⛔
 
 | 领域 | 现状 |
 |---|---|
-| **事件循环/输入** | 键盘处理**内联**在 `main.c` 的 `SDL_PollEvent` 中；`hal_video_poll_event()` 定义了但未使用（死代码）；**无鼠标**、无文本输入 |
+| **事件循环/输入** | ✅ 已抽出统一输入层 `src/input.c`（`input_poll(InputState*)`）：抽象键盘 `YphzKey` + 鼠标（逻辑坐标/位移/左右键边沿）；地图支持点击选城、拖拽/边缘/键盘卷动。仍未实现文本输入、手柄、快捷键重映射 |
 | **游戏逻辑** | 无回合/月份推进、无内政（开发/征兵/征税）、无行军/移动、无外交 |
 | **合战系统** | **完全未实现**：无战术地图、部队编成、战斗结算、AI |
 | **势力 AI** | 未实现 |
@@ -252,14 +290,16 @@ API）、`sdl_compat.h`（SDL2/SDL3 引入切换）。所有结构体 `#pragma p
 > 说明：当前全部渲染为软件 blit（640x400），2200G（Ryzen 3 2200G + Vega 8）完全
 > 够用；以下均不涉及重 GPU/着色器开发，先打通**逻辑层**。
 
-**子任务 1 — 统一输入层（键盘 + 鼠标）+ 事件循环重构**
-- 新增 `include/input.h` / `src/input.c`：把 `main.c` 内联的事件处理抽离，统一
-  键盘/鼠标事件；启用并改造 `hal_video_poll_event()`（或替换为更完整的
-  `input_poll(InputState*)`）。
-- 加入鼠标命中测试：把屏幕坐标映射回 1696x360 地图坐标，实现**点击城池**选中 +
-  点击情报卡按钮。
-- 验收：鼠标点击地图上的城池能选中并刷新情报卡；键盘行为不回归。
-- 理由：这是后续内政菜单、合战界面等一切 UI 的地基，且独立、低风险。
+**子任务 1 — 统一输入层（键盘 + 鼠标）+ 事件循环重构 — ✅ 已完成**
+- 新增 `include/input.h` / `src/input.c`：把 `main.c` 内联的事件处理抽离为
+  `input_poll(InputState*)`；删除未使用的 `hal_video_poll_event()` 死代码。
+- 加入鼠标命中测试：屏幕坐标 + `camera_x` 映射回 1696x360 地图坐标，实现**左键点击
+  城池**选中并展开情报卡；空白拖拽/贴近边缘/方向键三种卷动；右键关闭情报卡。
+- 新增 `--select-castle <n>`：无头 `--frames`/`--screenshot` 下直接渲染指定城的
+  选中态与情报卡，用于回归。
+- 验收：`SDL_VIDEODRIVER=dummy ./bin/yphz_engine --select-castle 30 --frames 5
+  --screenshot /tmp/c30.bmp` 得到选中鎌倉（源氏/白旗）情报卡；切换 16 得福原
+  （平氏/赤旗）；键盘行为不回归，`-Wall -Wextra` 零警告。
 
 **子任务 2 — 把 `Message.gp`（LS11）与事件文本接入 C 引擎**
 - 将 `extract_text.py` 的 LS11 解压移植为 C，加入 `decompress.c`/`decompress.h`

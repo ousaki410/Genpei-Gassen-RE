@@ -134,6 +134,7 @@ endif()
 add_executable(yphz_engine
     src/main.c
     src/hal_video.c
+    src/input.c
     src/decompress.c
     src/scenario.c)
 

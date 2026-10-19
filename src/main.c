@@ -5,6 +5,7 @@
 
 #include "sdl_compat.h"
 #include "hal_video.h"
+#include "input.h"
 #include "decompress.h"
 #include "scenario.h"
 
@@ -64,6 +65,37 @@ static void update_window_title(int cur_officer, bool use_mask, int bg_mode, boo
     hal_video_set_title(title);
 }
 
+// ---------------------------------------------------------------------------
+// Strategic map interaction helpers
+// ---------------------------------------------------------------------------
+
+// The 1696x360 map panorama is blitted at y = 20 (below the 20px status bar),
+// so screen y + this offset == world (map image) y.
+#define MAP_VIEW_Y_OFFSET 20
+
+static int clamp_camera_x(int x, int map_w) {
+    if (x < 0) return 0;
+    if (x > map_w - PC98_WIDTH) return map_w - PC98_WIDTH;
+    return x;
+}
+
+// Hit-test the 39 castle markers against a click given in *logical* (640x400)
+// coordinates. The clickable box is centred on the pennant/pole drawn for each
+// castle, so it covers the flag and its selection reticle. Returns the castle
+// index, or -1 when nothing was hit.
+static int map_castle_hit_test(const Scenario *sc, int camera_x, int mouse_x, int mouse_y) {
+    int world_x = mouse_x + camera_x;
+    int world_y = mouse_y - MAP_VIEW_Y_OFFSET;
+    for (int i = 0; i < sc->num_castles; i++) {
+        int dx = world_x - sc->castles[i].map_x;
+        int dy = world_y - sc->castles[i].map_y;
+        if (dx >= -16 && dx <= 16 && dy >= -18 && dy <= 12) {
+            return i;
+        }
+    }
+    return -1;
+}
+
 int main(int argc, char *argv[]) {
     const char *screenshot_path = NULL;
     int max_frames = 0;
@@ -71,6 +103,7 @@ int main(int argc, char *argv[]) {
     int cur_scenario = 0; // Scenario 0..3 (1180, 1183, 1184, 1185)
     int cur_castle = 30;  // Default to Kamakura (Castle 30)
     bool show_castle_card = true;
+    bool select_castle_mode = false;  // --select-castle: headless-friendly selection
 
     const char *env_dir = getenv("YPHZ_DATA_DIR");
     if (env_dir) {
@@ -101,7 +134,20 @@ int main(int argc, char *argv[]) {
             cur_castle = atoi(argv[++i]);
             if (cur_castle < 0) cur_castle = 0;
             if (cur_castle >= MAX_CASTLES) cur_castle = MAX_CASTLES - 1;
+        } else if (strcmp(argv[i], "--select-castle") == 0 && i + 1 < argc) {
+            cur_castle = atoi(argv[++i]);
+            if (cur_castle < 0) cur_castle = 0;
+            if (cur_castle >= MAX_CASTLES) cur_castle = MAX_CASTLES - 1;
+            select_castle_mode = true;
         }
+    }
+
+    // --select-castle renders the strategic map with the chosen castle selected
+    // and its info card open, so a headless --frames/--screenshot run captures
+    // exactly that state.
+    if (select_castle_mode) {
+        start_map_mode = true;
+        show_castle_card = true;
     }
 
     if (!hal_video_init("《源平合戦》 - Linux Native Video Engine (SDL2/PC-98)", 2)) {
@@ -226,121 +272,161 @@ int main(int argc, char *argv[]) {
 
     update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
 
+    InputState in;
+    input_init();
+
+    // Strategic-map camera interaction: auto-scroll when the pointer hugs a
+    // screen edge, and drag-panning when it does not start on a castle icon.
+    const int EDGE_SCROLL_MARGIN = 32;
+    const int EDGE_SCROLL_STEP = 14;
+    bool dragging = false;
+
     while (running) {
-        SDL_Event event;
-        while (SDL_PollEvent(&event)) {
-            if (event.type == SDL_QUIT) running = false;
-            if (event.type == SDL_KEYDOWN) {
-                SDL_Keycode key = event.key.keysym.sym;
-                if (key == SDLK_ESCAPE) running = false;
-                
-                // Mode Toggle: M
-                if (key == SDLK_m) {
-                    map_mode = !map_mode;
+        input_poll(&in);
+        if (in.quit) running = false;
+
+        const YphzKey key = in.key;
+        if (key == YPHZ_KEY_ESCAPE) {
+            // ESC dismisses the castle card first; a second ESC quits.
+            if (map_mode && show_castle_card) {
+                show_castle_card = false;
+            } else {
+                running = false;
+            }
+        }
+
+        // Mode Toggle: M
+        if (key == YPHZ_KEY_M) {
+            map_mode = !map_mode;
+            dragging = false;
+            update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
+        }
+
+        if (map_mode) {
+            // Scenario hot-switching: 1, 2, 3, 4
+            if (key >= YPHZ_KEY_1 && key <= YPHZ_KEY_4) {
+                cur_scenario = key - YPHZ_KEY_1;
+                scenario_load(snd_path, cur_scenario, &g_scenario);
+                refresh_officer_portrait(cur_officer, &g_scenario, kao_data, kao_size, officer_offsets, &cur_kao);
+                update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
+            }
+            // Castle selection: [ and ]
+            else if (key == YPHZ_KEY_LEFTBRACKET) {
+                cur_castle = (cur_castle - 1 + MAX_CASTLES) % MAX_CASTLES;
+                camera_x = clamp_camera_x(g_scenario.castles[cur_castle].map_x - 320, map_w);
+                update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
+            } else if (key == YPHZ_KEY_RIGHTBRACKET) {
+                cur_castle = (cur_castle + 1) % MAX_CASTLES;
+                camera_x = clamp_camera_x(g_scenario.castles[cur_castle].map_x - 320, map_w);
+                update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
+            }
+            // Inspect Castle Lord in Officer Mode: O or ENTER
+            else if (key == YPHZ_KEY_O || key == YPHZ_KEY_ENTER) {
+                ScenarioCastle *sel = &g_scenario.castles[cur_castle];
+                if (sel->lord_officer_id >= 0 && sel->lord_officer_id < g_scenario.num_officers) {
+                    cur_officer = sel->lord_officer_id;
+                    map_mode = false;
+                    refresh_officer_portrait(cur_officer, &g_scenario, kao_data, kao_size, officer_offsets, &cur_kao);
                     update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
                 }
+            }
+            // Toggle Castle Details Card: C or SPACE
+            else if (key == YPHZ_KEY_C || key == YPHZ_KEY_SPACE) {
+                show_castle_card = !show_castle_card;
+            }
+            // Jump to major strategic headquarters: TAB
+            else if (key == YPHZ_KEY_TAB) {
+                static const int major_castles[] = {0, 6, 16, 17, 25, 30, 38};
+                static int m_idx = 0;
+                m_idx = (m_idx + 1) % 7;
+                cur_castle = major_castles[m_idx];
+                camera_x = clamp_camera_x(g_scenario.castles[cur_castle].map_x - 320, map_w);
+                update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
+            }
+            // Smooth manual camera scroll (keyboard)
+            else if (key == YPHZ_KEY_LEFT || key == YPHZ_KEY_A) {
+                camera_x = clamp_camera_x(camera_x - 40, map_w);
+                update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
+            } else if (key == YPHZ_KEY_RIGHT || key == YPHZ_KEY_D) {
+                camera_x = clamp_camera_x(camera_x + 40, map_w);
+                update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
+            }
 
-                if (map_mode) {
-                    // Scenario hot-switching: 1, 2, 3, 4
-                    if (key >= SDLK_1 && key <= SDLK_4) {
-                        cur_scenario = key - SDLK_1;
-                        scenario_load(snd_path, cur_scenario, &g_scenario);
-                        refresh_officer_portrait(cur_officer, &g_scenario, kao_data, kao_size, officer_offsets, &cur_kao);
-                        update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
-                    }
-                    // Castle selection: [ and ]
-                    else if (key == SDLK_LEFTBRACKET) {
-                        cur_castle = (cur_castle - 1 + MAX_CASTLES) % MAX_CASTLES;
-                        camera_x = g_scenario.castles[cur_castle].map_x - 320;
-                        if (camera_x < 0) camera_x = 0;
-                        if (camera_x > map_w - PC98_WIDTH) camera_x = map_w - PC98_WIDTH;
-                        update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
-                    } else if (key == SDLK_RIGHTBRACKET) {
-                        cur_castle = (cur_castle + 1) % MAX_CASTLES;
-                        camera_x = g_scenario.castles[cur_castle].map_x - 320;
-                        if (camera_x < 0) camera_x = 0;
-                        if (camera_x > map_w - PC98_WIDTH) camera_x = map_w - PC98_WIDTH;
-                        update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
-                    }
-                    // Inspect Castle Lord in Officer Mode: O or ENTER
-                    else if (key == SDLK_o || key == SDLK_RETURN) {
-                        ScenarioCastle *sel = &g_scenario.castles[cur_castle];
-                        if (sel->lord_officer_id >= 0 && sel->lord_officer_id < g_scenario.num_officers) {
-                            cur_officer = sel->lord_officer_id;
-                            map_mode = false;
-                            refresh_officer_portrait(cur_officer, &g_scenario, kao_data, kao_size, officer_offsets, &cur_kao);
-                            update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
-                        }
-                    }
-                    // Toggle Castle Details Card: C or SPACE
-                    else if (key == SDLK_c || key == SDLK_SPACE) {
-                        show_castle_card = !show_castle_card;
-                    }
-                    // Jump to major strategic headquarters: TAB
-                    else if (key == SDLK_TAB) {
-                        static const int major_castles[] = {0, 6, 16, 17, 25, 30, 38};
-                        static int m_idx = 0;
-                        m_idx = (m_idx + 1) % 7;
-                        cur_castle = major_castles[m_idx];
-                        camera_x = g_scenario.castles[cur_castle].map_x - 320;
-                        if (camera_x < 0) camera_x = 0;
-                        if (camera_x > map_w - PC98_WIDTH) camera_x = map_w - PC98_WIDTH;
-                        update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
-                    }
-                    // Smooth manual camera scroll
-                    else if (key == SDLK_LEFT || key == SDLK_a) {
-                        camera_x -= 40;
-                        if (camera_x < 0) camera_x = 0;
-                        update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
-                    } else if (key == SDLK_RIGHT || key == SDLK_d) {
-                        camera_x += 40;
-                        if (camera_x > map_w - PC98_WIDTH) camera_x = map_w - PC98_WIDTH;
-                        update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
-                    }
+            // --- Mouse: edge auto-scroll ---
+            if (in.mouse_inside) {
+                if (in.mouse_x < EDGE_SCROLL_MARGIN) {
+                    camera_x = clamp_camera_x(camera_x - EDGE_SCROLL_STEP, map_w);
+                } else if (in.mouse_x >= PC98_WIDTH - EDGE_SCROLL_MARGIN) {
+                    camera_x = clamp_camera_x(camera_x + EDGE_SCROLL_STEP, map_w);
+                }
+            }
+
+            // --- Mouse: click a castle to select it; empty space starts a drag ---
+            if (in.lbutton_pressed) {
+                int hit = in.mouse_inside
+                              ? map_castle_hit_test(&g_scenario, camera_x, in.mouse_x, in.mouse_y)
+                              : -1;
+                if (hit >= 0) {
+                    cur_castle = hit;
+                    show_castle_card = true;
+                    update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
                 } else {
-                    // Officer Showcase Controls: Full 401 Officer Database
-                    if (key == SDLK_RIGHT) {
-                        cur_officer = (cur_officer + 1) % g_scenario.num_officers;
-                        refresh_officer_portrait(cur_officer, &g_scenario, kao_data, kao_size, officer_offsets, &cur_kao);
-                        update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
-                    } else if (key == SDLK_LEFT) {
-                        cur_officer = (cur_officer - 1 + g_scenario.num_officers) % g_scenario.num_officers;
-                        refresh_officer_portrait(cur_officer, &g_scenario, kao_data, kao_size, officer_offsets, &cur_kao);
-                        update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
-                    } else if (key == SDLK_DOWN) {
-                        cur_officer = (cur_officer + 10) % g_scenario.num_officers;
-                        refresh_officer_portrait(cur_officer, &g_scenario, kao_data, kao_size, officer_offsets, &cur_kao);
-                        update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
-                    } else if (key == SDLK_UP) {
-                        cur_officer = (cur_officer - 10 + g_scenario.num_officers) % g_scenario.num_officers;
-                        refresh_officer_portrait(cur_officer, &g_scenario, kao_data, kao_size, officer_offsets, &cur_kao);
-                        update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
-                    } else if (key == SDLK_f) {
-                        // Jump to next historical officer with dedicated portrait
-                        int next_off = cur_officer;
-                        for (int step = 1; step < g_scenario.num_officers; step++) {
-                            int check = (cur_officer + step) % g_scenario.num_officers;
-                            if (g_scenario.officers[check].face_id >= 0) {
-                                next_off = check;
-                                break;
-                            }
-                        }
-                        cur_officer = next_off;
-                        refresh_officer_portrait(cur_officer, &g_scenario, kao_data, kao_size, officer_offsets, &cur_kao);
-                        update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
-                    } else if (key >= SDLK_1 && key <= SDLK_4) {
-                        cur_scenario = key - SDLK_1;
-                        scenario_load(snd_path, cur_scenario, &g_scenario);
-                        refresh_officer_portrait(cur_officer, &g_scenario, kao_data, kao_size, officer_offsets, &cur_kao);
-                        update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
-                    } else if (key == SDLK_SPACE) {
-                        use_mask = !use_mask;
-                        update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
-                    } else if (key == SDLK_TAB) {
-                        bg_mode = (bg_mode + 1) % 3;
-                        update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
+                    dragging = true;
+                }
+            }
+            if (!in.lbutton_down) {
+                dragging = false;
+            } else if (dragging) {
+                // Drag pans the panorama: the terrain follows the pointer.
+                camera_x = clamp_camera_x(camera_x - in.mouse_dx, map_w);
+            }
+
+            // --- Mouse: right click dismisses the castle card ---
+            if (in.rbutton_pressed) {
+                show_castle_card = false;
+            }
+        } else {
+            // Officer Showcase Controls: Full 401 Officer Database
+            if (key == YPHZ_KEY_RIGHT) {
+                cur_officer = (cur_officer + 1) % g_scenario.num_officers;
+                refresh_officer_portrait(cur_officer, &g_scenario, kao_data, kao_size, officer_offsets, &cur_kao);
+                update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
+            } else if (key == YPHZ_KEY_LEFT) {
+                cur_officer = (cur_officer - 1 + g_scenario.num_officers) % g_scenario.num_officers;
+                refresh_officer_portrait(cur_officer, &g_scenario, kao_data, kao_size, officer_offsets, &cur_kao);
+                update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
+            } else if (key == YPHZ_KEY_DOWN) {
+                cur_officer = (cur_officer + 10) % g_scenario.num_officers;
+                refresh_officer_portrait(cur_officer, &g_scenario, kao_data, kao_size, officer_offsets, &cur_kao);
+                update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
+            } else if (key == YPHZ_KEY_UP) {
+                cur_officer = (cur_officer - 10 + g_scenario.num_officers) % g_scenario.num_officers;
+                refresh_officer_portrait(cur_officer, &g_scenario, kao_data, kao_size, officer_offsets, &cur_kao);
+                update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
+            } else if (key == YPHZ_KEY_F) {
+                // Jump to next historical officer with dedicated portrait
+                int next_off = cur_officer;
+                for (int step = 1; step < g_scenario.num_officers; step++) {
+                    int check = (cur_officer + step) % g_scenario.num_officers;
+                    if (g_scenario.officers[check].face_id >= 0) {
+                        next_off = check;
+                        break;
                     }
                 }
+                cur_officer = next_off;
+                refresh_officer_portrait(cur_officer, &g_scenario, kao_data, kao_size, officer_offsets, &cur_kao);
+                update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
+            } else if (key >= YPHZ_KEY_1 && key <= YPHZ_KEY_4) {
+                cur_scenario = key - YPHZ_KEY_1;
+                scenario_load(snd_path, cur_scenario, &g_scenario);
+                refresh_officer_portrait(cur_officer, &g_scenario, kao_data, kao_size, officer_offsets, &cur_kao);
+                update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
+            } else if (key == YPHZ_KEY_SPACE) {
+                use_mask = !use_mask;
+                update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
+            } else if (key == YPHZ_KEY_TAB) {
+                bg_mode = (bg_mode + 1) % 3;
+                update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
             }
         }
 

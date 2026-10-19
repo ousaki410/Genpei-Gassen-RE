@@ -208,24 +208,23 @@ void hal_video_present(void) {
     SDL_RenderPresent(s_renderer);
 }
 
-bool hal_video_poll_event(int *out_key, bool *out_quit) {
-    if (out_key) *out_key = 0;
-    if (out_quit) *out_quit = false;
+void hal_video_window_to_logical(int win_x, int win_y, int *out_x, int *out_y) {
+    float lx = (float)win_x;
+    float ly = (float)win_y;
 
-    SDL_Event ev;
-    while (SDL_PollEvent(&ev)) {
-        if (ev.type == SDL_QUIT) {
-            if (out_quit) *out_quit = true;
-            return true;
-        } else if (ev.type == SDL_KEYDOWN) {
-            if (ev.key.keysym.sym == SDLK_ESCAPE) {
-                if (out_quit) *out_quit = true;
-            }
-            if (out_key) *out_key = ev.key.keysym.sym;
-            return true;
-        }
+    // SDL knows how it letterboxes the 640x400 logical size inside the window,
+    // including any HiDPI scaling, so ask it rather than re-deriving it.
+    if (s_renderer) {
+        SDL_RenderWindowToLogical(s_renderer, win_x, win_y, &lx, &ly);
     }
-    return false;
+
+    if (out_x) *out_x = (int)(lx >= 0.0f ? lx + 0.5f : lx - 0.5f);
+    if (out_y) *out_y = (int)(ly >= 0.0f ? ly + 0.5f : ly - 0.5f);
+}
+
+bool hal_video_has_mouse_focus(void) {
+    if (!s_window) return false;
+    return (SDL_GetWindowFlags(s_window) & SDL_WINDOW_MOUSE_FOCUS) != 0;
 }
 
 uint8_t* hal_video_get_framebuffer(void) {

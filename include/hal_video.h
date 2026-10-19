@@ -37,8 +37,13 @@ void hal_video_blit_transparent(int dst_x, int dst_y, int w, int h, const uint8_
 void hal_video_blit_masked(int dst_x, int dst_y, int w, int h, const uint8_t *src_pixels, const uint8_t *mask_pixels, int src_pitch);
 
 void hal_video_present(void);
-bool hal_video_poll_event(int *out_key, bool *out_quit);
 bool hal_video_save_bmp(const char *bmp_path);
+
+// Input-support helpers. The HAL owns the window/renderer, so window <-> logical
+// coordinate conversion and mouse-focus queries live here; the input layer
+// (input.c) builds on top of them.
+void hal_video_window_to_logical(int win_x, int win_y, int *out_x, int *out_y);
+bool hal_video_has_mouse_focus(void);
 
 uint8_t* hal_video_get_framebuffer(void);
 
