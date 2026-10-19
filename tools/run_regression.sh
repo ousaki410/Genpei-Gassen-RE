@@ -143,6 +143,27 @@ else
     printf 'FAIL  road graph validation\n'; fail=$((fail + 1))
 fi
 
+echo "== sub-task 10: DOS save slots + raw 4-plane sprites =="
+# 原版 Savedata.gp 槽 0：导入 → 导出到槽 4 → 再导入，状态哈希必须一致
+if [ -f games/yphz/Savedata.gp ]; then
+    cp games/yphz/Savedata.gp "$TMP/dos.gp"
+    h0=$("$BIN" --import-dos-save 0 --dos-save-path "$TMP/dos.gp" --dump-state --frames 1 2>&1 | grep -oE 'hash=0x[0-9a-f]+')
+    "$BIN" --import-dos-save 0 --export-dos-save 4 --dos-save-path "$TMP/dos.gp" --frames 1 >/dev/null 2>&1
+    h1=$("$BIN" --import-dos-save 4 --dos-save-path "$TMP/dos.gp" --dump-state --frames 1 2>&1 | grep -oE 'hash=0x[0-9a-f]+')
+    if [ -n "$h0" ] && [ "$h0" = "$h1" ]; then
+        printf 'PASS  DOS save slot round-trip (%s)\n' "$h0"; pass=$((pass + 1))
+    else
+        printf 'FAIL  DOS save slot round-trip (%s vs %s)\n' "$h0" "$h1"; fail=$((fail + 1))
+    fi
+else
+    printf 'SKIP  DOS save slot round-trip (no Savedata.gp)\n'
+fi
+
+# 裸 4 位平面精灵：Hunitpat.gp = 1187 块 16x16，Mainobj.gp = 208x236
+check "raw 4-plane unit bank"  "Unit patterns: 1187 tiles of 16x16" --attack 30,29 --frames 2
+check "raw 4-plane preview"   "Raw Hunitpat.gp: 16x16 \(4-plane\)" --preview-raw Hunitpat.gp 3 --frames 2
+check "raw 4-plane sheet"     "Raw Mainobj.gp: 208x236 \(4-plane\)" --preview-raw Mainobj.gp --frames 2
+
 echo "-------------------------------------------------------------------"
 printf 'TOTAL %d checks: %d passed, %d failed\n' "$((pass + fail))" "$pass" "$fail"
 [ "$fail" -eq 0 ]

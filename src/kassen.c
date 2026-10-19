@@ -4,6 +4,9 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "hal_video.h"
+#include "raw_sprite.h"
+
 // ---------------------------------------------------------------------------
 // SJIS labels (PC-98 FONT.CHR has no usable lower-case ASCII)
 // ---------------------------------------------------------------------------
@@ -557,4 +560,109 @@ bool kassen_is_unified(const Scenario *sc) {
         if (sc->castles[i].faction_id != faction) return false;
     }
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// Unit sprite bank (子任务 10 part 2)
+//
+// Hunitpat.gp is a raw PC-98 4-plane sheet: 151936 B = 1187 tiles of 16x16
+// pixels, 128 bytes each (4 planes x 2 bytes/row x 16 rows).  The bank is
+// decoded once and the battlefield paints a small formation of unit sprites
+// for each side; the number of sprites scales with the troop count.
+// ---------------------------------------------------------------------------
+
+#define UNIT_COLS        6      // sprites per row
+#define UNIT_ROWS        4      // rows per side
+#define UNIT_STEP        17     // pixel spacing between sprites
+#define UNIT_ATK_X       146    // left edge of the attacking formation
+#define UNIT_DEF_X       478    // left edge of the defending formation
+#define UNIT_TOP_Y       56
+#define UNIT_TROOPS_PER  50     // one sprite per this many troops
+
+static RawSpriteBank s_unit_bank;
+static bool          s_unit_bank_loaded;
+
+bool kassen_units_load(const char *path) {
+    kassen_units_free();
+    if (!path) return false;
+    const int n = raw_sprite_load_tile_bank(path, KASSEN_UNIT_TILE_W,
+                                             KASSEN_UNIT_TILE_H,
+                                             RAW_SPRITE_MAX_TILES,
+                                             &s_unit_bank);
+    if (n <= 0) return false;
+    s_unit_bank_loaded = true;
+    return true;
+}
+
+void kassen_units_free(void) {
+    if (s_unit_bank_loaded) {
+        raw_sprite_free_bank(&s_unit_bank);
+        s_unit_bank_loaded = false;
+    }
+}
+
+int kassen_units_loaded(void) {
+    return s_unit_bank_loaded ? s_unit_bank.count : 0;
+}
+
+int kassen_unit_formation(int troops, bool attacker, int officer,
+                           KassenUnitSprite *out, int max_out) {
+    if (!out || max_out <= 0) return 0;
+    if (troops < 1) troops = 1;
+
+    // Sprite count scales with the troop strength.
+    int count = (troops + UNIT_TROOPS_PER - 1) / UNIT_TROOPS_PER;
+    if (count < 1) count = 1;
+    if (count > KASSEN_MAX_UNITS) count = KASSEN_MAX_UNITS;
+    if (count > max_out) count = max_out;
+
+    const int bank = kassen_units_loaded();
+    const int base_x = attacker ? UNIT_ATK_X : UNIT_DEF_X;
+
+    for (int i = 0; i < count; i++) {
+        const int col = i % UNIT_COLS;
+        const int row = i / UNIT_COLS;
+        out[i].x = base_x + col * UNIT_STEP;
+        out[i].y = UNIT_TOP_Y + row * UNIT_STEP;
+        out[i].attacker = attacker;
+        // Deterministic pattern choice: the commanding officer picks the
+        // family of unit art, the slot inside that family varies the tile.
+        int tile = 0;
+        if (bank > 0) {
+            const int seed = attacker ? (officer * 3 + 1) : (officer * 5 + 2);
+            int family = seed % (bank > 7 ? bank - 7 : bank);
+            if (family < 0) family += bank;
+            tile = family + (i % 7);
+            if (tile >= bank) tile -= bank;
+        }
+        out[i].tile = tile;
+    }
+    return count;
+}
+
+void kassen_units_draw(int att_troops, int def_troops,
+                       int att_officer, int def_officer) {
+    if (!s_unit_bank_loaded || s_unit_bank.count <= 0) return;
+
+    KassenUnitSprite sprites[KASSEN_MAX_UNITS];
+
+    int n = kassen_unit_formation(att_troops, true, att_officer,
+                                  sprites, KASSEN_MAX_UNITS);
+    for (int i = 0; i < n; i++) {
+        const RawSprite *t = &s_unit_bank.tiles[sprites[i].tile];
+        if (!t->pixels) continue;
+        hal_video_blit_transparent(sprites[i].x, sprites[i].y,
+                                   t->width, t->height, t->pixels,
+                                   t->width, 0);
+    }
+
+    n = kassen_unit_formation(def_troops, false, def_officer,
+                               sprites, KASSEN_MAX_UNITS);
+    for (int i = 0; i < n; i++) {
+        const RawSprite *t = &s_unit_bank.tiles[sprites[i].tile];
+        if (!t->pixels) continue;
+        hal_video_blit_transparent(sprites[i].x, sprites[i].y,
+                                   t->width, t->height, t->pixels,
+                                   t->width, 0);
+    }
 }

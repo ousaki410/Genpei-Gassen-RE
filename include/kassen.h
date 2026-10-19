@@ -106,6 +106,40 @@ void kassen_apply_result(KassenState *ks, Scenario *sc);
 // True when every castle belongs to the same faction (天下統一).
 bool kassen_is_unified(const Scenario *sc);
 
+// ---------------------------------------------------------------------------
+// Unit sprite bank (子任务 10 part 2)
+//
+// Hunitpat.gp is a raw PC-98 4-plane sheet: 151936 B = 1187 tiles of 16x16
+// pixels (128 B per tile).  The bank is decoded once at start-up and the
+// battlefield draws a small formation of unit sprites on each side, the
+// number of sprites scaling with the current troop count.
+// ---------------------------------------------------------------------------
+#define KASSEN_UNIT_TILE_W 16
+#define KASSEN_UNIT_TILE_H 16
+#define KASSEN_MAX_UNITS   24      // per side (6 columns x 4 rows)
+
+// One unit sprite placed on the battlefield.
+typedef struct {
+    int  x, y;        // top-left pixel in the 640x400 battle view
+    int  tile;        // index into the unit pattern bank
+    bool attacker;    // true = attacking side, false = defending side
+} KassenUnitSprite;
+
+// Decode the unit pattern bank from a raw 4-plane file (Hunitpat.gp).
+bool kassen_units_load(const char *path);
+void kassen_units_free(void);
+int  kassen_units_loaded(void);   // number of decoded tiles
+
+// Build the formation for one side.  Returns the sprite count written to
+// `out` (never more than max_out).  `officer` seeds the tile choice so that
+// different battles show different unit patterns, deterministically.
+int  kassen_unit_formation(int troops, bool attacker, int officer,
+                            KassenUnitSprite *out, int max_out);
+
+// Draw both formations on the battlefield (called from the battle renderer).
+void kassen_units_draw(int att_troops, int def_troops,
+                        int att_officer, int def_officer);
+
 const char *kassen_command_name(KassenCommand cmd);   // SJIS label
 const char *kassen_command_ascii(KassenCommand cmd);  // headless log label
 const char *kassen_defense_name(KassenCommand cmd);   // SJIS label (defence set)

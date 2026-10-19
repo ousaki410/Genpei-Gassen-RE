@@ -18,6 +18,7 @@
 #include "scenario.h"
 #include "treasure.h"
 #include "dos_save.h"
+#include "raw_sprite.h"
 
 static char s_asset_dir[256] = "games/yphz";
 
@@ -684,6 +685,7 @@ static NpkFile     s_hke_pack;
 static NpkFile     s_hkumi_pack;
 static NpkFile     s_hikback_pack;
 static ImageDecoded s_battle_bg;
+static ImageDecoded preview_raw_img;      // 子任务 10 part 2
 static ImageDecoded s_battle_duel;
 static int          s_battle_duel_key = -1;   // pack*1000 + block
 static ImageDecoded s_battle_kao[2];
@@ -901,6 +903,18 @@ static bool battle_enter(Scenario *sc, int from, int to, int officer,
     if (!s_hkumi_pack.data)   npk_load(&s_hkumi_pack, s_asset_dir, "Hkumi.gp");
     if (!s_hikback_pack.data) npk_load(&s_hikback_pack, s_asset_dir, "Hikback.gp");
 
+    // 子任务 10 part 2: raw 4-plane unit pattern bank (Hunitpat.gp).
+    if (kassen_units_loaded() == 0) {
+        char unit_path[512];
+        snprintf(unit_path, sizeof(unit_path), "%s/Hunitpat.gp", s_asset_dir);
+        if (kassen_units_load(unit_path)) {
+            printf("[+] Unit patterns: %d tiles of %dx%d (Hunitpat.gp)\n",
+                   kassen_units_loaded(), KASSEN_UNIT_TILE_W, KASSEN_UNIT_TILE_H);
+        } else {
+            kassen_units_load("Hunitpat.gp");
+        }
+    }
+
     if (defense) {
         kassen_begin_defense(&g_kassen, sc, from, to, officer);
     } else {
@@ -984,6 +998,7 @@ static void battle_leave(Scenario *sc) {
     s_battle_duel_key = -1;
     free_decoded_image(&s_battle_kao[0]);
     free_decoded_image(&s_battle_kao[1]);
+    kassen_units_free();
 }
 
 // One frame of battle input. Returns true when the caller should stop
@@ -1077,6 +1092,11 @@ static void render_battle(const Scenario *sc) {
     // Portraits.
     blit_portrait_frame(&s_battle_kao[0], 8, 44);
     blit_portrait_frame(&s_battle_kao[1], 504, 44);
+
+    // Unit formations (子任务 10 part 2): the number of 16x16 sprites on each
+    // side scales with the current troop count.
+    kassen_units_draw(g_kassen.att_troops, g_kassen.def_troops,
+                      g_kassen.attacker_officer, g_kassen.defender_officer);
 
     // Troop / morale / defense readouts.
     char line[96];
@@ -1305,6 +1325,8 @@ int main(int argc, char *argv[]) {
     // --preview-npk <file> <block> standalone viewer.
     const char *preview_npk_name = NULL;
     int  preview_npk_index = 0;
+    const char *preview_raw_name = NULL;   // 子任务 10 part 2
+    int  preview_raw_index = 0;
     bool preview_mode = false;
     NpkFile preview_pack = {0};
     ImageDecoded preview_img = {0};
@@ -1506,6 +1528,13 @@ int main(int argc, char *argv[]) {
             preview_npk_name = argv[++i];
             preview_npk_index = atoi(argv[++i]);
             if (preview_npk_index < 0) preview_npk_index = 0;
+        } else if (strcmp(argv[i], "--preview-raw") == 0 && i + 1 < argc) {
+            preview_raw_name = argv[++i];
+            preview_raw_index = 0;
+            if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9') {
+                preview_raw_index = atoi(argv[++i]);
+                if (preview_raw_index < 0) preview_raw_index = 0;
+            }
         } else if (strcmp(argv[i], "--gallery") == 0 && i + 1 < argc) {
             gallery_pack = atoi(argv[++i]);
             if (gallery_pack < 0) gallery_pack = 0;
@@ -1583,7 +1612,8 @@ int main(int argc, char *argv[]) {
     bool cli_jump = start_map_mode || select_castle_mode || test_msg >= 0 ||
                     do_cmd != TURN_CMD_NONE || end_turns > 0 || ai_step ||
                     trigger_event >= 0 || attack_from >= 0 || defend_from >= 0 ||
-                    preview_npk_name != NULL || gallery_mode || unified_debug ||
+                    preview_npk_name != NULL || preview_raw_name != NULL ||
+                    gallery_mode || unified_debug ||
                     load_path != NULL || save_path != NULL || dump_state ||
                     show_roads || item_show >= 0 || grant_item >= 0 ||
                     dos_import_slot >= 0 || dos_export_slot >= 0 ||
@@ -1869,6 +1899,55 @@ int main(int argc, char *argv[]) {
         } else {
             fprintf(stderr, "[ERROR] --preview-npk failed: %s block %d\n",
                     preview_npk_name, preview_npk_index);
+        }
+    }
+
+    // --preview-raw <file> [tile]: decode one raw 4-plane sheet/tile and
+    // display it standalone (子任务 10 part 2).
+    if (preview_raw_name) {
+        char raw_path[512];
+        snprintf(raw_path, sizeof(raw_path), "%s/%s", s_asset_dir, preview_raw_name);
+        FILE *rf = fopen(raw_path, "rb");
+        if (!rf) {
+            snprintf(raw_path, sizeof(raw_path), "%s", preview_raw_name);
+            rf = fopen(raw_path, "rb");
+        }
+        if (rf) {
+            fseek(rf, 0, SEEK_END);
+            long rsize = ftell(rf);
+            rewind(rf);
+            uint8_t *rdata = (uint8_t *)malloc((size_t)(rsize > 0 ? rsize : 1));
+            if (rdata && rsize > 0 &&
+                fread(rdata, 1, (size_t)rsize, rf) == (size_t)rsize) {
+                RawSprite rs;
+                // Hunitpat.gp -> 16x16 tiles, Mainobj.gp -> 208x236 sheet.
+                const int tw = 16, th = 16;
+                bool ok = false;
+                if (preview_raw_index > 0) {
+                    const size_t tile_bytes = 128;
+                    ok = (size_t)rsize >= (size_t)preview_raw_index * tile_bytes + tile_bytes &&
+                         raw_sprite_decode_4plane(rdata + (size_t)preview_raw_index * tile_bytes,
+                                                  tile_bytes, tw, th, &rs);
+                } else {
+                    ok = raw_sprite_decode_4plane(rdata, (size_t)rsize, 208, 236, &rs);
+                }
+                if (ok) {
+                    preview_raw_img.width = rs.width;
+                    preview_raw_img.height = rs.height;
+                    preview_raw_img.pixels = rs.pixels;
+                    preview_raw_img.mask = NULL;
+                    preview_mode = true;
+                    printf("[+] Raw %s: %dx%d (4-plane)\n",
+                           preview_raw_name, rs.width, rs.height);
+                } else {
+                    fprintf(stderr, "[ERROR] --preview-raw failed: %s\n",
+                            preview_raw_name);
+                }
+            }
+            free(rdata);
+            fclose(rf);
+        } else {
+            fprintf(stderr, "[ERROR] --preview-raw failed: %s\n", preview_raw_name);
         }
     }
 
@@ -2802,6 +2881,19 @@ int main(int argc, char *argv[]) {
             // 子任务 8: title / scenario / daimyo screens.
             opening_render(&g_opening, &g_scenario, kao_data, kao_size,
                            officer_offsets);
+        } else if (preview_mode && preview_raw_img.pixels) {
+            // Standalone raw 4-plane sheet/tile viewer (--preview-raw).
+            draw_centered_image(&preview_raw_img);
+            char cap[128];
+            char raw_name[64];
+            snprintf(raw_name, sizeof(raw_name), "%s",
+                     preview_raw_name ? preview_raw_name : "?");
+            ascii_upper(raw_name);
+            snprintf(cap, sizeof(cap), "RAW %s  %dx%d  4-PLANE",
+                     raw_name, preview_raw_img.width, preview_raw_img.height);
+            hal_video_fill_rect(0, PC98_HEIGHT - 20, PC98_WIDTH, 20, 1);
+            hal_video_draw_rect(0, PC98_HEIGHT - 20, PC98_WIDTH, 20, 7);
+            hal_video_draw_text_sjis(16, PC98_HEIGHT - 18, cap, 7);
         } else if (preview_mode) {
             // Standalone NPK016 block viewer (--preview-npk).
             draw_centered_image(&preview_img);
@@ -3240,6 +3332,7 @@ int main(int argc, char *argv[]) {
     free_decoded_image(&cur_kao);
     free_decoded_image(&dlg_kao);
     free_decoded_image(&preview_img);
+    free_decoded_image(&preview_raw_img);
     npk_free(&preview_pack);
     free_decoded_image(&gallery_img);
     npk_free(&gallery_npk);

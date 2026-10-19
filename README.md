@@ -62,6 +62,7 @@ SDL_VIDEODRIVER=dummy ./bin/yphz_engine --frames 5 --screenshot /tmp/shot.bmp
 │   ├── event.h             #   历史事件表（年月 / 落城 → Mainevt 块）
 │   ├── save.h              #   原生存档槽（Scenario + TurnState 快照）
 │   ├── opening.h           #   片头流程（Logo → シナリオ → 大名）
+│   ├── raw_sprite.h        #   裸 4 位平面精灵解码（Hunitpat/Hchikei/Mainobj）
 │   └── sdl_compat.h        #   SDL2/SDL3 唯一引入点
 ├── src/                    # 引擎源码（C11）
 │   ├── main.c              #   入口：CLI、资源装载、双模式渲染主循环
@@ -76,11 +77,13 @@ SDL_VIDEODRIVER=dummy ./bin/yphz_engine --frames 5 --screenshot /tmp/shot.bmp
 │   ├── save.c              #   原生存档槽读写 + 状态哈希
 │   ├── opening.c           #   片头/剧本/大名选择状态机与渲染
 │   ├── npk.c               #   NPK016 通用容器索引（按需解压单块）
+│   ├── raw_sprite.c        #   PC-98 4 位平面裸图解码器
 │   └── scenario.c          #   Sndata.gp 剧本解析 + 静态历史数据表
 ├── tools/                  # Python 逆向工具（Pillow）
 │   ├── probe_gp_files.py   #   全部 53 个数据文件的格式/维度分类
 │   ├── analyze_raw_and_exe.py  # EXE 内嵌资产目录提取 + 裸图尺寸推导
 │   ├── probe_savedata.py   #   Savedata.gp 存档槽结构侦察（对比 Sndata.gp）
+│   ├── decode_raw_sprites.py # 裸 4 位平面精灵解码（Hunitpat/Hchikei/Mainobj）
 │   └── extractor/          #   各格式的解码参考实现
 │       ├── extract_images.py   #   NPK016/NUP4 图像批量解包
 │       ├── extract_kaodata.py  #   90 名武将立绘解包
@@ -166,6 +169,10 @@ cmake --build build -j
 | `--show-roads` | — | — | 子任务 9：以地图模式启动并高亮绘制全部 39 城路网（实线白 + 城编号），同时打印 `[ROADS] castles=39 edges=72` 与每城邻接表 |
 | `--show-item <n>` | — | — | 子任务 9：打开家宝面板并选中第 n 件家宝（0..18），打印其归属与加成 `[ITEM] id=.. owner=.. lead+.. war+.. intel+.. pol+..` |
 | `--grant-item <n>` | — | — | 子任务 9：把第 n 件家宝赏赐给玩家势力的当主（校验归属），打印 `[ITEM] grant item=.. officer=..` 或 `grant failed` |
+| `--import-dos-save <slot>` | — | — | 子任务 10：导入原版 `Savedata.gp` 槽（0..9）：读槽头推断剧本与年月，覆写武将/城池的可变字段，并恢复玩家势力与当主；打印 `[DOS] import slot=.. date=.. scenario=.. leader=.. faction=.. castle=..` |
+| `--export-dos-save <slot>` | — | — | 子任务 10：把当前 `Scenario` + `TurnState` 写回原版 `Savedata.gp` 槽（0..9）；目标为空模板时先用 `Sndata.gp` 重建基础快照再覆写，导出前自动生成 `.bak` 备份 |
+| `--dos-save-path <path>` | — | `games/yphz/Savedata.gp` | 子任务 10：覆盖 DOS 存档槽文件路径（便于在副本上测试导入/导出） |
+| `--preview-raw <file> [tile]` | — | — | 子任务 10：独立预览裸 4 位平面图（`Hunitpat.gp` / `Hchikei.gp` / `Mainobj.gp`）；给出 tile 号时显示该 16×16 图块，否则显示整张 208×236 图集 |
 | `--shot-frame <n>` | — | `2` | 指定 `--screenshot` 在第 n 帧抓图（便于截取合战过程/胜利结算/夺城后的地图/事件 CG） |
 | `--unified` | — | — | 调试用：把 39 城全部划归玩家势力并立即播放「天下統一」结局 CG（用于无头验证） |
 | `--end-turn <n>` | — | `0` | 无头连续推进 n 个月（跨年进位），并弹出最后一月的收入结算框 |
@@ -284,7 +291,7 @@ SDL_VIDEODRIVER=dummy ./bin/yphz_engine --attack 30,29 \
     --battle-plan charge,charge,charge,charge,charge,charge \
     --frames 12 --shot-frame 9 --screenshot /tmp/seize.bmp
 
-# 一键无头回归（32 项）
+# 一键无头回归（36 项）
 tools/run_regression.sh
 ```
 
@@ -647,11 +654,12 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
   `↑↓`/数字移动、`ENTER`/点击确认 → `turn_init()` 并交回主循环进入地图。
 - `--click` 可完整驱动三屏（无头截图验证）；任何“跳转类” CLI 参数都会跳过片头。
 
-**`tools/run_regression.sh` — 32 项无头回归**
+**`tools/run_regression.sh` — 36 项无头回归**
 
 一条命令跑完全部子任务的 CLI 断言（片头点击流、内政/合战/守城/退却、AI 一个月、
 历史事件、天下統一、画廊/NPK 预览、存档往返哈希一致、路网 `edges=72` 与对称连通
-校验、家宝赏赐/缴获）。任一项失败即非零退出，输出 `FAIL` 及末几行日志。
+校验、家宝赏赐/缴获、DOS 存档槽导入/导出往返、裸 4 位平面精灵解码）。
+任一项失败即非零退出，输出 `FAIL` 及末几行日志。
 
 **`src/treasure.c`（175 行）+ `include/treasure.h` — 家宝系统（子任务 9）**
 - `TreasureState`：`owner_faction[19]` + `owner_officer[19]`（-1 表示势力库房未赏赐）。
@@ -659,6 +667,22 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
   `treasure_grant()` 校验归属后记名到武将；`treasure_officer_bonus()` 汇总有效加成；
   `treasure_seize()` 以确定性种子（城/年月/帧）按 85% 概率把手牌转给胜方。
 - 图标来自 `Mainitem.gp`（NPK016，19 块 64×64），由 `main.c` 一次性解码缓存。
+
+**`src/dos_save.c` + `include/dos_save.h` — 原版 `Savedata.gp` 槽读写（子任务 10 第一部分）**
+- `dos_save_read_info()`：解析 43,403 B 槽的头部（年月 / 剧本提示 / 当主家族与名 /
+  势力表），并把武将表（+103）与城池表（+30,895）交给 `Scenario` 解析。
+- `dos_save_apply()`：以槽内数据覆写 `Scenario` 的可变字段（武将五维、年龄、
+  所属势力/城池、兵力；城池归属、石高、金、兵力、城防、士気），并同步年月。
+- `dos_save_export()`：按目标槽的剧本重建基础快照（空模板）或原地 patch，
+  再写回当前 `Scenario` + `TurnState`；导出前自动生成 `.bak` 备份。
+- 槽头家族名字段存的是**当主家族**（源 / 平 / 藤原），据此反查当主武将与玩家势力。
+
+**`src/raw_sprite.c` + `include/raw_sprite.h` — 裸 4 位平面精灵解码（子任务 10 第二部分）**
+- `raw_sprite_decode_4plane()`：按 `[p0][p1][p2][p3]` 的逐行四段布局解码，
+  色号 `p0 | p1<<1 | p2<<2 | p3<<3`，与 `decompress.c` 的 NPK 平面转换一致。
+- `raw_sprite_decode_tile_bank()` / `raw_sprite_load_tile_bank()`：把
+  `Hunitpat.gp` 切成 1187 块 16×16 图案（每块 128 B）。
+- `src/kassen.c` 依当前兵力在战场上绘制双方 16×16 队形精灵。
 
 **`src/npk.c`（64 行）— NPK016 通用容器访问**
 - `npk_load()` 扫描文件中全部 `NPK016` magic 并记录块偏移；`npk_decode()` 按块
@@ -776,14 +800,14 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
 | **合战系统** | ✅ 基础闭环已完成：战场背景、双方立绘与兵力/士気/城防、突撃/斉射/一騎討/退却、一騎討特写、夺城/势力转移、天下統一结局；**AI 攻方自动出招、玩家守城战、AI vs AI 自动推演** 已完成；仍无部队编成与战术地图 |
 | **势力 AI** | ✅ 已完成：每月按势力执行内政（徴兵/徴税/開発）与战略出阵（兵力优势判定 + 概率出兵），确定性随机可复现 |
 | **历史事件** | ✅ 年月表（1180/9～1185/3 六个源平合战节点）与落城事件（平泉/屋島）触发 `Mainevt.gp` CG + `Message.gp` 台词；`Mainevt.gp` 事件脚本引擎仍未逆向 |
-| **存档** | ✅ `Savedata.gp` 结构已侦察（10 × 43403 B：年/月头 + 势力表 + 漂移的场景快照）；引擎改用自描述原生槽（`Scenario` + `TurnState`，63270 B），支持 `F5`/`F9` 与 `--save`/`--load`，往返状态哈希一致；写入原版 `Savedata.gp` 字节格式仍待完成 |
+| **存档** | ✅ `Savedata.gp` 结构已侦察（10 × 43403 B：年/月头 + 势力表 + 漂移的场景快照）；引擎用自描述原生槽（`Scenario` + `TurnState`，63422 B），支持 `F5`/`F9` 与 `--save`/`--load`，往返状态哈希一致；**原版 `Savedata.gp` 字节读写已实现**（`--import-dos-save` / `--export-dos-save`，槽布局：武将 @ +103、运行块 2070 B、城池 @ +30895、合计 +2137 B 漂移），导入→导出→再导入哈希一致 |
 | **片头/选势力** | ✅ `Logo.gp` 标题 → 4 剧本选择 → 15 势力大名选择（旗色 + 当主 `Kaodata` 立绘）→ 地图；无跳转类 CLI 参数时自动进入，所有既有 CLI 路径保持不变 |
 | **音频** | **完全未实现**：`Music.gp`/`Opmusic.gp`/`Edmusic.gp` 未解析，FM 驱动 `Fmdrv.com` 未逆向，无 MIDI/音效 |
 | **游戏内文本** | ✅ C 引擎已加载 `Message.gp`（LS11，5 条 / 2350 句）并在底部弹框显示；`Mainevt.gp` 事件脚本逻辑仍未逆向 |
-| **未解析的数据文件** | `Maincmd.gp`、`Mainobj.gp`、`Kisetsu.gp`、`Montage.gp`、`Opendat.gp`、`Enddat.gp`、`Disk-*.gp` 等裸格式未解压；`Mainitem.gp` 已接入 19 件家宝系统（名称/加成/赏赐/缴获） |
+| **未解析的数据文件** | `Maincmd.gp`、`Kisetsu.gp`、`Montage.gp`、`Opendat.gp`、`Enddat.gp`、`Disk-*.gp` 等裸格式未解压；`Mainitem.gp` 已接入 19 件家宝系统（名称/加成/赏赐/缴获）；`Hunitpat.gp` / `Hchikei.gp` / `Mainobj.gp` 已接入裸 4 位平面解码器（16×16 图块 / 208×236 图集），合战画面按兵力绘制双方队形 |
 | **未逆向的程序** | `Main.exe`/`Genpei.com`/`Open.exe`/`End.exe` 的主循环、菜单、合战逻辑 |
 
-### 四、2200G 上的子任务（1–9 已完成）
+### 四、2200G 上的子任务（1–10 已完成）
 
 > 说明：当前全部渲染为软件 blit（640x400），2200G（Ryzen 3 2200G + Vega 8）完全
 > 够用；以下均不涉及重 GPU/着色器开发，先打通**逻辑层**。
@@ -1008,5 +1032,54 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
   （片头/内政/合战/AI/事件/存档往返/路网对称连通/家宝赏赐/缴获），全部 PASS；
   `-Wall -Wextra` 零警告。
 
-补充（非本期）：**音频**（先逆向 `Fmdrv.com` + `Music.gp` 的 FM 音源格式）、
-**原版 `Savedata.gp` 字节读写**与**合战裸图精灵**（`Hunitpat`/`Hchikei`）仍属后续方向。
+**子任务 10 — 原版 `Savedata.gp` 导入/导出 + 裸 4 位平面精灵 — ✅ 已完成**
+
+**第一部分：DOS 存档槽读写**
+- **槽布局**（由 `tools/probe_savedata.py` 的滑动窗口结构签名比对确定）：
+  `Savedata.gp` = 434,030 B = **10 × 43,403 B** 定长槽。槽内偏移：
+  `0` 年（u16 LE）、`2` 月（u8）、`3` 标志、`4` 剧本提示（u16）、
+  `6` 当主家族名（7 B SJIS）、`13` 当主名（5 B SJIS）、`18` 第二份年月头、
+  `24` 15 项势力表（u16 × 15）；**武将表 @ +103**（401 × 71 B）、
+  其后 **2,070 B 运行时/动作块**、**城池表 @ +30,895**（39 × 76 B）、
+  尾部 9,544 B 事件区。相对 `Sndata.gp` 合计 **+2,137 B 漂移**
+  = 表头 +67 + 运行块 +2,070；记录步长（71 / 76 B）与尾部长度完全不变。
+  实测槽 0/1/2 分别保存 1180/10、1183/1、1184/10，槽 3–9 为空模板。
+- **引擎实现**：`include/dos_save.h` / `src/dos_save.c`
+  - `dos_save_read_info()`：读槽头 → 年月 / 剧本号 / 当主名 / 势力；
+  - `dos_save_apply()`：把槽内可变字段（武将的年龄·五维·所属·城池·兵力、
+    城池的归属·石高·金·兵力·城防·士気、年月）覆写进 `Scenario`；
+  - `dos_save_export()`：把当前 `Scenario` + `TurnState` 写回目标槽
+    （目标为空模板时先用 `Sndata.gp` 重建基础快照再覆写；已有槽原地 patch）。
+- **CLI**：`--import-dos-save <0..9>`、`--export-dos-save <0..9>`、
+  `--dos-save-path <path>`（默认 `games/yphz/Savedata.gp`；导出前自动 `.bak` 备份）。
+  导入会先按槽头推断剧本再加载 `Sndata.gp`，并把玩家势力/当主/初始城恢复为存档状态。
+- **验收**：`import 0 → export 4 → import 4` 状态哈希一致（`0xb16846bc`）；
+  跨剧本 `slot2 → export 0 → import 0` 同样一致（`0x61a3d6ef`）；
+  槽头家族名修正为**当主家族**（源/平/藤原）而非势力名。
+
+**第二部分：裸 4 位平面（4‑plane）精灵解码**
+- **格式**：非 NPK016 容器的裸图，每条扫描线按
+  `[plane0][plane1][plane2][plane3]` 四段顺序存储，
+  每段 `ceil(w/8)` 字节（1 bit/像素，bit 7 为最左像素），
+  像素色号 = `p0 | p1<<1 | p2<<2 | p3<<3`（与 `decompress.c` 的 NPK 平面
+  转换完全一致，因此共用同一套 PC‑98 16 色调色板）。
+  据此：
+  - `Hunitpat.gp` 151,936 B = **1187 × 128 B** → **1187 块 16×16** 单位图案；
+  - `Hchikei.gp` 10,060 B = **76 B + 78 × 128 B** → 78 块 16×16
+    （同长度亦可解读为 100×100 图块 id 网格 + 60 B 布阵表，二者都成立）；
+  - `Mainobj.gp` 24,544 B = **104 B/行 × 236 行** → **208×236** 图集
+    （每行 26 B/平面 × 4 平面 = 104 B）。
+- **引擎实现**：`include/raw_sprite.h` / `src/raw_sprite.c`
+  （`raw_sprite_decode_4plane()` / `raw_sprite_decode_tile_bank()` /
+  `raw_sprite_load_tile_bank()`）。
+- **合战集成**：`src/kassen.c` 载入 `Hunitpat.gp` 图案库，
+  战场上按当前兵力绘制双方队形（每 50 兵 1 个 16×16 精灵，
+  每侧最多 6×4 = 24 个；图案按当主 id 确定性选取）。
+- **工具**：`tools/decode_raw_sprites.py` 输出尺寸报告与预览图
+  （`Hunitpat_sheet.png` / `Hchikei_grid.png` / `Mainobj_sheet.png`）；
+  C 与 Python 解码结果**逐像素一致**（已交叉验证）。
+- **CLI**：`--preview-raw <file> [tile]` 独立预览裸 4 位平面图。
+- **回归**：`tools/run_regression.sh` 增至 **36 项**（新增 DOS 存档往返 +
+  3 项裸图解码检查），全部 PASS；`-Wall -Wextra` 零警告。
+
+补充（非本期）：**音频**（先逆向 `Fmdrv.com` + `Music.gp` 的 FM 音源格式）仍属后续方向。
