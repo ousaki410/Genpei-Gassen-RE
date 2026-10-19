@@ -9,6 +9,7 @@
 #include "decompress.h"
 #include "message.h"
 #include "turn.h"
+#include "kassen.h"
 #include "npk.h"
 #include "scenario.h"
 
@@ -183,7 +184,7 @@ static void draw_wrapped_sjis(int x, int y, int max_w, int line_h,
 #define CMD_MENU_W        128
 #define CMD_MENU_TITLE_H  22
 #define CMD_MENU_ITEM_H   26
-#define CMD_MENU_ITEMS    5
+#define CMD_MENU_ITEMS    7
 #define CMD_MENU_H        (CMD_MENU_TITLE_H + CMD_MENU_ITEMS * CMD_MENU_ITEM_H + 8)
 
 #define ROSTER_X          52
@@ -193,6 +194,17 @@ static void draw_wrapped_sjis(int x, int y, int max_w, int line_h,
 #define ROSTER_ROWS_TOP   52
 #define ROSTER_ROW_H      22
 #define ROSTER_ROWS       11
+
+// 子任务 6: castle picker panel (移動 / 出陣 destination list).
+#define LIST_X            180
+#define LIST_Y            110
+#define LIST_W            280
+#define LIST_ROW_H        24
+#define LIST_TOP          (LIST_Y + 30)
+
+// 子任务 6: castle picker (移動/出陣) and battle plan limits.
+#define MAX_CASTLE_CONNS  8
+#define MAX_BATTLE_PLAN   16
 
 static int sjis_width(const char *s) {
     int w = 0;
@@ -218,11 +230,22 @@ static int cmd_menu_hit(int mouse_x, int mouse_y) {
     return idx;
 }
 
+// Hit-test the 移動 / 出陣 castle picker rows.
+static int list_panel_hit(int mouse_x, int mouse_y, int count) {
+    if (mouse_x < LIST_X || mouse_x >= LIST_X + LIST_W) return -1;
+    if (mouse_y < LIST_TOP) return -1;
+    int idx = (mouse_y - LIST_TOP) / LIST_ROW_H;
+    if (idx < 0 || idx >= count) return -1;
+    return idx;
+}
+
 static void draw_command_menu(int hover) {
     static const char *labels[CMD_MENU_ITEMS] = {
         "\x8a\x4a\x94\xad",   // 開発
         "\x92\xa5\x95\xba",   // 徴兵
         "\x92\xa5\x90\xc5",   // 徴税
+        "\x88\xda\x93\xae",   // 移動
+        "\x8f\x6f\x90\x77",   // 出陣
         "\x95\x90\x8f\xab",   // 武将
         "\x8f\x49\x97\xb9"    // 終了
     };
@@ -396,12 +419,379 @@ static void draw_gallery_overlay(int pack, int block, int count,
         "LEFT/RIGHT:BLOCK  UP/DOWN:PACK  L/ESC:CLOSE", 6);
 }
 
+// ---------------------------------------------------------------------------
+// 合戦 (Kassen) battle mode: assets, input and rendering
+// ---------------------------------------------------------------------------
+
+#define SJIS_KASSEN   "\x8d\x87\x90\xed"  // 合戦
+#define SJIS_ATT_SIDE "\x8d\x55\x95\xfb"  // 攻方
+#define SJIS_DEF_SIDE "\x8e\xe7\x95\xfb"  // 守方
+#define SJIS_VICTORY  "\x8f\x9f\x97\x98"  // 勝利
+#define SJIS_DEFEAT   "\x94\x73\x96\x6b"  // 敗北
+#define SJIS_RETREAT  "\x91\xde\x8b\x70"  // 退却
+#define SJIS_DUEL     "\x88\xea\x8b\x52\x93\xa2" // 一騎討
+#define SJIS_TROOPS   "\x95\xba\x97\xcd"  // 兵力
+#define SJIS_MORALE   "\x8e\x6d\x8b\x43"  // 士気
+#define SJIS_DEFENSE  "\x8f\xe9\x96\x68"  // 城防
+#define SJIS_UNIFIED  "\x93\x56\x89\xba\x93\x9d\x88\xea" // 天下統一
+
+#define BATTLE_CMD_X    8
+#define BATTLE_CMD_Y    360
+#define BATTLE_CMD_W    150
+#define BATTLE_CMD_H    30
+#define BATTLE_CMD_GAP  6
+
+static KassenState g_kassen;
+static bool        g_battle_mode = false;
+static int         g_battle_finished_frame = -1;
+static NpkFile     s_hke_pack;
+static NpkFile     s_hkumi_pack;
+static NpkFile     s_hikback_pack;
+static ImageDecoded s_battle_bg;
+static ImageDecoded s_battle_duel;
+static int          s_battle_duel_key = -1;   // pack*1000 + block
+static ImageDecoded s_battle_kao[2];
+
+// 天下統一 ending (forced with --unified or reached by capturing the last
+// enemy castle).  Uses a Mainevt.gp illustration as the ending CG.
+static bool         g_ending_mode = false;
+static NpkFile      s_ending_pack;
+static ImageDecoded s_ending_img;
+static int          s_ending_block = 4;
+
+static void ending_enter(void) {
+    if (g_ending_mode) return;
+    if (!s_ending_pack.data) {
+        npk_load(&s_ending_pack, s_asset_dir, "Mainevt.gp");
+    }
+    free_decoded_image(&s_ending_img);
+    if (!npk_decode(&s_ending_pack, s_ending_block, &s_ending_img)) {
+        fprintf(stderr, "[WARN] ending CG Mainevt.gp block %d unavailable\n",
+                s_ending_block);
+    }
+    g_ending_mode = true;
+    printf("[ENDING] 天下統一 CG: Mainevt.gp block %d (%dx%d)\n",
+           s_ending_block, s_ending_img.width, s_ending_img.height);
+}
+
+static void render_ending(void) {
+    hal_video_clear(1);
+    hal_video_fill_rect(0, 0, PC98_WIDTH, 20, 1);
+    hal_video_draw_rect(0, 0, PC98_WIDTH, 20, 6);
+    hal_video_draw_text_sjis(270, 2, "\x93\x56\x89\xba\x93\x9d\x88\xea", 6);
+
+    if (s_ending_img.pixels) {
+        int w = s_ending_img.width;
+        int h = s_ending_img.height;
+        int x = (PC98_WIDTH - w) / 2;
+        int y = 100;
+        hal_video_fill_rect(x - 8, y - 8, w + 16, h + 16, 0);
+        hal_video_draw_rect(x - 8, y - 8, w + 16, h + 16, 6);
+        hal_video_draw_rect(x - 6, y - 6, w + 12, h + 12, 7);
+        hal_video_blit_indexed(x, y, w, h, s_ending_img.pixels, w);
+    }
+
+    hal_video_draw_rect(160, 300, 320, 1, 6);
+    hal_video_draw_text_sjis(200, 316,
+        "\x8c\xb9\x95\xbd\x8d\x87\x90\xed\x20\x81\x45\x20\x93\x56\x89\xba\x93\x9d\x88\xea",
+        7); // 源平合戦 ・ 天下統一
+    hal_video_draw_text_sjis(280, 350, "THE END", 6);
+    hal_video_draw_text_sjis(250, 372, "CLICK / ANY KEY", 6);
+}
+
+
+static int battle_cmd_hit(int mx, int my) {
+    for (int i = 0; i < 4; i++) {
+        int x = BATTLE_CMD_X + i * (BATTLE_CMD_W + BATTLE_CMD_GAP);
+        if (mx >= x && mx < x + BATTLE_CMD_W &&
+            my >= BATTLE_CMD_Y && my < BATTLE_CMD_Y + BATTLE_CMD_H) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static void blit_portrait_frame(const ImageDecoded *img, int x, int y) {
+    hal_video_fill_rect(x, y, 128, 160, 1);
+    hal_video_draw_rect(x, y, 128, 160, 6);
+    hal_video_draw_rect(x + 2, y + 2, 124, 156, 7);
+    if (!img || !img->pixels) return;
+    int px = x + (128 - img->width) / 2;
+    int py = y + (160 - img->height) / 2;
+    if (img->mask) {
+        hal_video_blit_masked(px, py, img->width, img->height,
+                              img->pixels, img->mask, img->width);
+    } else {
+        hal_video_blit_indexed(px, py, img->width, img->height,
+                               img->pixels, img->width);
+    }
+}
+
+static void draw_bar(int x, int y, int w, int h, int value, int maxv,
+                     uint8_t color) {
+    hal_video_fill_rect(x, y, w, h, 0);
+    hal_video_draw_rect(x, y, w, h, 7);
+    int fill = (maxv > 0) ? (value * (w - 2)) / maxv : 0;
+    if (fill < 0) fill = 0;
+    if (fill > w - 2) fill = w - 2;
+    if (fill > 0) hal_video_fill_rect(x + 1, y + 1, fill, h - 2, color);
+}
+
+// Decode the Hkumi/Hikback close-up for the current duel, caching by block.
+static void battle_ensure_duel(void) {
+    if (!g_kassen.duel_active) return;
+    int which = g_kassen.duel_bg;   // 0 = Hkumi, 1 = Hikback
+    NpkFile *pack = (which == 1) ? &s_hikback_pack : &s_hkumi_pack;
+    if (!pack->data) return;
+    int block = (which == 1) ? 0 : (g_kassen.turn % pack->count);
+    int key = which * 1000 + block;
+    if (s_battle_duel_key == key && s_battle_duel.pixels) return;
+
+    free_decoded_image(&s_battle_duel);
+    s_battle_duel_key = -1;
+    if (npk_decode(pack, block, &s_battle_duel)) {
+        s_battle_duel_key = key;
+    }
+}
+
+static bool battle_enter(Scenario *sc, int from, int to, int officer,
+                         const uint8_t *kao_data, size_t kao_size,
+                         const uint32_t *offsets) {
+    if (!sc) return false;
+    if (from < 0 || from >= sc->num_castles ||
+        to < 0 || to >= sc->num_castles) return false;
+
+    if (!s_hke_pack.data)     npk_load(&s_hke_pack, s_asset_dir, "Hkeshiki.gp");
+    if (!s_hkumi_pack.data)   npk_load(&s_hkumi_pack, s_asset_dir, "Hkumi.gp");
+    if (!s_hikback_pack.data) npk_load(&s_hikback_pack, s_asset_dir, "Hikback.gp");
+
+    kassen_begin(&g_kassen, sc, from, to, officer);
+
+    free_decoded_image(&s_battle_bg);
+    if (!npk_decode(&s_hke_pack, g_kassen.bg, &s_battle_bg)) {
+        fprintf(stderr, "[WARN] Hkeshiki.gp block %d unavailable\n", g_kassen.bg);
+    }
+
+    free_decoded_image(&s_battle_duel);
+    s_battle_duel_key = -1;
+    for (int i = 0; i < 2; i++) {
+        free_decoded_image(&s_battle_kao[i]);
+        int oid = (i == 0) ? g_kassen.attacker_officer
+                           : g_kassen.defender_officer;
+        if (oid >= 0) {
+            decode_officer_portrait(oid, sc, kao_data, kao_size, offsets,
+                                    &s_battle_kao[i]);
+        }
+    }
+
+    g_battle_mode = true;
+    g_battle_finished_frame = -1;
+    printf("[KASSEN] begin from=%d to=%d officer=%d defender=%d "
+           "att=%d def=%d defense=%d morale=%d/%d bg=%d\n",
+           from, to, g_kassen.attacker_officer, g_kassen.defender_officer,
+           g_kassen.att_troops, g_kassen.def_troops, g_kassen.defense,
+           g_kassen.att_morale, g_kassen.def_morale, g_kassen.bg);
+    return true;
+}
+
+static void battle_leave(Scenario *sc) {
+    if (!g_battle_mode) return;
+    int to = g_kassen.to_castle;
+    bool victory = g_kassen.victory;
+    bool retreated = g_kassen.retreated;
+    kassen_apply_result(&g_kassen, sc);
+    g_battle_mode = false;
+    g_battle_finished_frame = -1;
+    printf("[KASSEN] end to=%d victory=%d retreated=%d new_faction=%d "
+           "troops=%d defense=%d unified=%d\n",
+           to, victory ? 1 : 0, retreated ? 1 : 0, sc->castles[to].faction_id,
+           sc->castles[to].troops, sc->castles[to].defense,
+           kassen_is_unified(sc) ? 1 : 0);
+    free_decoded_image(&s_battle_bg);
+    free_decoded_image(&s_battle_duel);
+    s_battle_duel_key = -1;
+    free_decoded_image(&s_battle_kao[0]);
+    free_decoded_image(&s_battle_kao[1]);
+}
+
+// One frame of battle input. Returns true when the caller should stop
+// processing further (non-battle) input this frame.
+static void battle_apply_command(Scenario *sc, KassenCommand cmd) {
+    if (!g_battle_mode || cmd == KASSEN_CMD_NONE) return;
+    kassen_command(&g_kassen, sc, cmd);
+    printf("[KASSEN] turn=%d cmd=%s att_loss=%d def_loss=%d "
+           "att=%d def=%d defense=%d morale=%d/%d finished=%d\n",
+           g_kassen.turn, kassen_command_ascii(cmd),
+           g_kassen.last_att_loss, g_kassen.last_def_loss,
+           g_kassen.att_troops, g_kassen.def_troops, g_kassen.defense,
+           g_kassen.att_morale, g_kassen.def_morale,
+           g_kassen.finished ? 1 : 0);
+    if (g_kassen.finished) {
+        printf("[KASSEN] result victory=%d retreated=%d att=%d def=%d defense=%d\n",
+               g_kassen.victory ? 1 : 0, g_kassen.retreated ? 1 : 0,
+               g_kassen.att_troops, g_kassen.def_troops, g_kassen.defense);
+    }
+}
+
+static bool battle_input(Scenario *sc, const InputState *in, YphzKey key) {
+    if (g_kassen.finished) {
+        if (in->lbutton_pressed || in->rbutton_pressed ||
+            key != YPHZ_KEY_NONE) {
+            battle_leave(sc);
+        }
+        return true;
+    }
+
+    KassenCommand cmd = KASSEN_CMD_NONE;
+    if (key >= YPHZ_KEY_1 && key <= YPHZ_KEY_4) {
+        cmd = (KassenCommand)(KASSEN_CMD_CHARGE + (key - YPHZ_KEY_1));
+    } else if (key == YPHZ_KEY_ESCAPE) {
+        cmd = KASSEN_CMD_RETREAT;
+    }
+    if (in->lbutton_pressed && in->mouse_inside) {
+        int h = battle_cmd_hit(in->mouse_x, in->mouse_y);
+        if (h >= 0) cmd = (KassenCommand)(KASSEN_CMD_CHARGE + h);
+    }
+    if (cmd != KASSEN_CMD_NONE) {
+        battle_apply_command(sc, cmd);
+    }
+    return true;
+}
+
+static void render_battle(const Scenario *sc) {
+    if (s_battle_bg.pixels) {
+        hal_video_blit_indexed(0, 0, s_battle_bg.width, s_battle_bg.height,
+                               s_battle_bg.pixels, s_battle_bg.width);
+    } else {
+        hal_video_clear(1);
+    }
+
+    const char *att_name = (g_kassen.attacker_officer >= 0)
+        ? sc->officers[g_kassen.attacker_officer].full_name_sjis
+        : sc->castles[g_kassen.from_castle].name_sjis;
+    const char *def_name = (g_kassen.defender_officer >= 0)
+        ? sc->officers[g_kassen.defender_officer].full_name_sjis
+        : sc->castles[g_kassen.to_castle].name_sjis;
+
+    // Side headers.
+    char hdr[96];
+    snprintf(hdr, sizeof(hdr), SJIS_ATT_SIDE " %s", att_name);
+    hal_video_fill_rect(8, 22, 200, 18, 1);
+    hal_video_draw_rect(8, 22, 200, 18, 6);
+    hal_video_draw_text_sjis(14, 24, hdr, 7);
+
+    snprintf(hdr, sizeof(hdr), SJIS_DEF_SIDE " %s", def_name);
+    hal_video_fill_rect(432, 22, 200, 18, 1);
+    hal_video_draw_rect(432, 22, 200, 18, 6);
+    hal_video_draw_text_sjis(438, 24, hdr, 7);
+
+    // Portraits.
+    blit_portrait_frame(&s_battle_kao[0], 8, 44);
+    blit_portrait_frame(&s_battle_kao[1], 504, 44);
+
+    // Troop / morale / defense readouts.
+    char line[96];
+    snprintf(line, sizeof(line), SJIS_TROOPS " %d", g_kassen.att_troops);
+    hal_video_fill_rect(8, 208, 128, 16, 1);
+    hal_video_draw_text_sjis(12, 209, line, 7);
+    draw_bar(8, 226, 128, 10, g_kassen.att_troops, 600, 4);
+    snprintf(line, sizeof(line), SJIS_MORALE " %d", g_kassen.att_morale);
+    hal_video_draw_text_sjis(8, 240, line, 6);
+
+    snprintf(line, sizeof(line), SJIS_TROOPS " %d", g_kassen.def_troops);
+    hal_video_fill_rect(504, 208, 128, 16, 1);
+    hal_video_draw_text_sjis(508, 209, line, 7);
+    draw_bar(504, 226, 128, 10, g_kassen.def_troops, 600, 3);
+    snprintf(line, sizeof(line), SJIS_MORALE " %d", g_kassen.def_morale);
+    hal_video_draw_text_sjis(504, 240, line, 6);
+    snprintf(line, sizeof(line), SJIS_DEFENSE " %d", g_kassen.defense);
+    hal_video_draw_text_sjis(504, 254, line, 6);
+
+    // Turn counter.
+    snprintf(line, sizeof(line), SJIS_KASSEN "  TURN %d", g_kassen.turn + 1);
+    hal_video_fill_rect(216, 4, 208, 16, 1);
+    hal_video_draw_rect(216, 4, 208, 16, 6);
+    hal_video_draw_text_sjis(272, 5, line, 7);
+
+    // Battle log over the dark centre of the scenery.
+    hal_video_fill_rect(176, 168, 288, 104, 1);
+    hal_video_draw_rect(176, 168, 288, 104, 6);
+    hal_video_draw_rect(178, 170, 284, 100, 7);
+    for (int i = 0; i < g_kassen.log_count; i++) {
+        hal_video_draw_text_sjis(186, 176 + i * 18, g_kassen.log[i], 7);
+    }
+
+    // Command buttons.
+    for (int i = 0; i < 4; i++) {
+        KassenCommand cmd = (KassenCommand)(KASSEN_CMD_CHARGE + i);
+        int x = BATTLE_CMD_X + i * (BATTLE_CMD_W + BATTLE_CMD_GAP);
+        hal_video_fill_rect(x, BATTLE_CMD_Y, BATTLE_CMD_W, BATTLE_CMD_H, 1);
+        hal_video_draw_rect(x, BATTLE_CMD_Y, BATTLE_CMD_W, BATTLE_CMD_H, 6);
+        hal_video_draw_rect(x + 2, BATTLE_CMD_Y + 2,
+                            BATTLE_CMD_W - 4, BATTLE_CMD_H - 4, 7);
+        char label[64];
+        snprintf(label, sizeof(label), "%d %s", i + 1, kassen_command_name(cmd));
+        hal_video_draw_text_sjis(x + 12, BATTLE_CMD_Y + 7, label, 7);
+    }
+
+    // Duel close-up overlay.
+    battle_ensure_duel();
+    if (g_kassen.duel_active && s_battle_duel.pixels) {
+        int w = s_battle_duel.width;
+        int h = s_battle_duel.height;
+        int x = (PC98_WIDTH - w) / 2;
+        int y = (PC98_HEIGHT - h) / 2 - 24;
+        hal_video_fill_rect(x - 3, y - 3, w + 6, h + 6, 1);
+        hal_video_draw_rect(x - 3, y - 3, w + 6, h + 6, 6);
+        hal_video_blit_indexed(x, y, w, h, s_battle_duel.pixels, w);
+        char banner[64];
+        snprintf(banner, sizeof(banner), SJIS_DUEL "  %s " SJIS_VICTORY,
+                 g_kassen.duel_winner == 0 ? SJIS_ATT_SIDE : SJIS_DEF_SIDE);
+        hal_video_fill_rect(x, y + h + 4, w, 20, 1);
+        hal_video_draw_rect(x, y + h + 4, w, 20, 7);
+        hal_video_draw_text_sjis(x + 10, y + h + 7, banner, 6);
+    }
+
+    // Result overlay.
+    if (g_kassen.finished) {
+        int w = 400, h = 190;
+        int x = (PC98_WIDTH - w) / 2;
+        int y = (PC98_HEIGHT - h) / 2 - 24;
+        hal_video_fill_rect(x, y, w, h, 1);
+        hal_video_draw_rect(x, y, w, h, 6);
+        hal_video_draw_rect(x + 2, y + 2, w - 4, h - 4, 7);
+
+        const char *title = g_kassen.victory ? SJIS_VICTORY
+                          : (g_kassen.retreated ? SJIS_RETREAT : SJIS_DEFEAT);
+        hal_video_draw_text_sjis(x + 20, y + 16, title, g_kassen.victory ? 6 : 3);
+        hal_video_draw_rect(x + 16, y + 40, w - 32, 1, 7);
+
+        char l1[128], l2[128], l3[128];
+        snprintf(l1, sizeof(l1), SJIS_ATT_SIDE "  %s  " SJIS_TROOPS " %d",
+                 att_name, g_kassen.att_troops);
+        snprintf(l2, sizeof(l2), SJIS_DEF_SIDE "  %s  " SJIS_TROOPS " %d",
+                 def_name, g_kassen.def_troops);
+        snprintf(l3, sizeof(l3), SJIS_DEFENSE " %d", g_kassen.defense);
+        hal_video_draw_text_sjis(x + 24, y + 52, l1, 7);
+        hal_video_draw_text_sjis(x + 24, y + 76, l2, 7);
+        hal_video_draw_text_sjis(x + 24, y + 100, l3, 6);
+
+        if (g_kassen.victory && kassen_is_unified(sc)) {
+            hal_video_draw_text_sjis(x + 24, y + 128, SJIS_UNIFIED, 6);
+        }
+        hal_video_draw_text_sjis(x + 24, y + h - 28,
+                                 "CLICK / ANY KEY", 6);
+    }
+}
+
 // ASCII command name for headless logs.
 static const char* turn_cmd_ascii(TurnCommand cmd) {
     switch (cmd) {
         case TURN_CMD_DEVELOP:  return "DEVELOP";
         case TURN_CMD_RECRUIT:  return "RECRUIT";
         case TURN_CMD_TAX:      return "TAX";
+        case TURN_CMD_MOVE:     return "MOVE";
+        case TURN_CMD_ATTACK:   return "ATTACK";
         case TURN_CMD_OFFICERS: return "OFFICERS";
         case TURN_CMD_END:      return "END";
         default:                return "NONE";
@@ -425,6 +815,8 @@ int main(int argc, char *argv[]) {
 
     // Turn / domestic-affairs state.
     int faction_override = -1;             // --faction
+    bool unified_debug = false;            // --unified: force 天下統一 ending
+    int move_to_castle = -1;               // --move-to (with --do-cmd move)
     TurnCommand do_cmd = TURN_CMD_NONE;    // --do-cmd
     int end_turns = 0;                     // --end-turn
     bool show_cmd_menu = false;            // player-castle command menu
@@ -437,6 +829,20 @@ int main(int argc, char *argv[]) {
     int  roster_scroll = 0;
     bool roster_select_mode = false;              // roster is choosing an actor
     TurnCommand roster_cmd = TURN_CMD_NONE;       // command awaiting an officer
+
+    // 子任务 6: 移動 destination list / 出陣 target list (modal castle picker).
+    int  list_mode = 0;            // 0 none, 1 移動 own neighbours, 2 出陣 enemies
+    int  list_items[MAX_CASTLE_CONNS];
+    int  list_count = 0;
+    int  list_actor = -1;
+
+    // 子任务 6: --attack <from,to> and --battle-plan <cmds> headless battle.
+    int  attack_from = -1;
+    int  attack_to = -1;
+    char attack_spec[64] = {0};
+    int  battle_plan[MAX_BATTLE_PLAN];
+    int  battle_plan_count = 0;
+    int  shot_frame = 2;           // --shot-frame: which frame --screenshot grabs
 
     // Headless mouse-click injection: --click x,y[@frame], repeatable / ';'-list.
     ClickEvent clicks[MAX_CLICKS];
@@ -503,14 +909,54 @@ int main(int argc, char *argv[]) {
             faction_override = atoi(argv[++i]);
             if (faction_override < 0) faction_override = 0;
             if (faction_override > 14) faction_override = 14;
+        } else if (strcmp(argv[i], "--unified") == 0) {
+            unified_debug = true;
         } else if (strcmp(argv[i], "--do-cmd") == 0 && i + 1 < argc) {
             const char *c = argv[++i];
             if (strcmp(c, "develop") == 0)      do_cmd = TURN_CMD_DEVELOP;
             else if (strcmp(c, "recruit") == 0) do_cmd = TURN_CMD_RECRUIT;
             else if (strcmp(c, "tax") == 0)     do_cmd = TURN_CMD_TAX;
+            else if (strcmp(c, "move") == 0)    do_cmd = TURN_CMD_MOVE;
             else if (strcmp(c, "officers") == 0) do_cmd = TURN_CMD_OFFICERS;
             else if (strcmp(c, "end") == 0)     do_cmd = TURN_CMD_END;
-            else fprintf(stderr, "[WARN] unknown --do-cmd '%s' (develop|recruit|tax|officers|end)\n", c);
+            else fprintf(stderr, "[WARN] unknown --do-cmd '%s' (develop|recruit|tax|move|officers|end)\n", c);
+        } else if (strcmp(argv[i], "--move-to") == 0 && i + 1 < argc) {
+            move_to_castle = atoi(argv[++i]);
+            if (move_to_castle < 0) move_to_castle = 0;
+            if (move_to_castle >= MAX_CASTLES) move_to_castle = MAX_CASTLES - 1;
+        } else if (strcmp(argv[i], "--attack") == 0 && i + 1 < argc) {
+            snprintf(attack_spec, sizeof(attack_spec), "%s", argv[++i]);
+            int a = -1, b = -1;
+            if (sscanf(attack_spec, "%d,%d", &a, &b) == 2) {
+                attack_from = a;
+                attack_to = b;
+            } else {
+                fprintf(stderr, "[WARN] bad --attack '%s' (want from,to)\n", attack_spec);
+            }
+        } else if (strcmp(argv[i], "--battle-plan") == 0 && i + 1 < argc) {
+            char *spec = argv[++i];
+            char *p = spec;
+            while (*p && battle_plan_count < MAX_BATTLE_PLAN) {
+                char *tok = p;
+                char *comma = strchr(p, ',');
+                if (comma) { *comma = '\0'; p = comma + 1; }
+                else { p += strlen(p); }
+
+                KassenCommand cmd = KASSEN_CMD_NONE;
+                if (strcmp(tok, "charge") == 0)       cmd = KASSEN_CMD_CHARGE;
+                else if (strcmp(tok, "volley") == 0)  cmd = KASSEN_CMD_VOLLEY;
+                else if (strcmp(tok, "duel") == 0)    cmd = KASSEN_CMD_DUEL;
+                else if (strcmp(tok, "retreat") == 0) cmd = KASSEN_CMD_RETREAT;
+                else if (*tok) {
+                    fprintf(stderr, "[WARN] bad --battle-plan token '%s'\n", tok);
+                }
+                if (cmd != KASSEN_CMD_NONE) {
+                    battle_plan[battle_plan_count++] = (int)cmd;
+                }
+            }
+        } else if (strcmp(argv[i], "--shot-frame") == 0 && i + 1 < argc) {
+            shot_frame = atoi(argv[++i]);
+            if (shot_frame < 0) shot_frame = 0;
         } else if (strcmp(argv[i], "--end-turn") == 0 && i + 1 < argc) {
             end_turns = atoi(argv[++i]);
             if (end_turns < 0) end_turns = 0;
@@ -705,6 +1151,9 @@ int main(int argc, char *argv[]) {
     int player_faction;
     if (faction_override >= 0) {
         player_faction = faction_override;
+    } else if (attack_from >= 0 && attack_from < g_scenario.num_castles) {
+        // --attack launches from the given castle's clan.
+        player_faction = g_scenario.castles[attack_from].faction_id;
     } else if ((do_cmd != TURN_CMD_NONE || end_turns > 0) &&
                cur_castle >= 0 && cur_castle < g_scenario.num_castles) {
         // Headless domestic tests operate on the selected castle's clan.
@@ -721,6 +1170,17 @@ int main(int argc, char *argv[]) {
     }
     printf("[+] Turn state: faction %d, %d/%d\n",
            g_turn.player_faction, g_turn.year, g_turn.month);
+
+    // --unified: force every castle into the player's faction and show the
+    // 天下統一 ending CG (headless verification of the final condition).
+    if (unified_debug) {
+        for (int i = 0; i < g_scenario.num_castles; i++) {
+            g_scenario.castles[i].faction_id = player_faction;
+        }
+        printf("[ENDING] forced unification: all %d castles -> faction %d\n",
+               g_scenario.num_castles, player_faction);
+        ending_enter();
+    }
 
     // Initial officer decode
     ImageDecoded cur_kao = {0};
@@ -755,6 +1215,33 @@ int main(int argc, char *argv[]) {
 
     int frame_count = 0;
 
+    // --- Headless battle (--attack <from,to>) -------------------------------
+    // Starts the 合戦 before the first frame so --screenshot captures the
+    // battle screen, and --battle-plan can drive it deterministically.
+    if (attack_from >= 0 && attack_to >= 0) {
+        if (attack_from < g_scenario.num_castles &&
+            attack_to < g_scenario.num_castles) {
+            int off = turn_find_attack_officer(&g_scenario, &g_turn, attack_from);
+            if (off < 0) off = g_scenario.castles[attack_from].lord_officer_id;
+            player_faction = g_scenario.castles[attack_from].faction_id;
+            g_turn.player_faction = player_faction;
+            map_mode = true;
+            cur_castle = attack_to;
+            show_castle_card = false;
+            if (battle_enter(&g_scenario, attack_from, attack_to, off,
+                             kao_data, kao_size, officer_offsets)) {
+                if (off >= 0) g_turn.acted[off] = 1;
+                printf("[+] Battle: castle %d -> %d (officer %d)\n",
+                       attack_from, attack_to, off);
+            } else {
+                fprintf(stderr, "[ERROR] --attack invalid: %d -> %d\n",
+                        attack_from, attack_to);
+            }
+        } else {
+            fprintf(stderr, "[ERROR] --attack out of range: %s\n", attack_spec);
+        }
+    }
+
     // --- Headless domestic-command execution (--do-cmd / --end-turn) --------
     // Runs before the first frame so --screenshot captures the resulting state.
     if (do_cmd != TURN_CMD_NONE || end_turns > 0) {
@@ -766,6 +1253,37 @@ int main(int argc, char *argv[]) {
             roster_scroll = 0;
             show_officer_list = true;
             printf("[TURN] roster castle=%d officers=%d\n", cur_castle, roster_count);
+        } else if (do_cmd == TURN_CMD_MOVE) {
+            const ScenarioCastle *before = &g_scenario.castles[cur_castle];
+            int tr0 = before->troops;
+            int dest = move_to_castle;
+            if (dest < 0) {
+                int targets[MAX_CASTLE_CONNS];
+                int n = turn_list_move_targets(&g_scenario, cur_castle,
+                                               player_faction, targets, MAX_CASTLE_CONNS);
+                if (n > 0) dest = targets[0];
+            }
+
+            TurnResult r;
+            turn_move_officer(&g_turn, &g_scenario, cur_castle, dest, -1, &r);
+
+            printf("[TURN] MOVE castle=%d -> %d officer=%d ok=%d troops %d -> %d\n",
+                   cur_castle, dest, r.officer_id, r.ok ? 1 : 0, tr0,
+                   g_scenario.castles[cur_castle].troops);
+            if (dest >= 0 && dest < g_scenario.num_castles) {
+                printf("[TURN]   DEST %d troops=%d\n", dest,
+                       g_scenario.castles[dest].troops);
+            }
+            printf("[TURN]   DATE   %d/%d\n", g_turn.year, g_turn.month);
+
+            show_dialog = true;
+            dlg_custom = true;
+            dlg_officer = r.officer_id;
+            snprintf(dlg_custom_text, sizeof(dlg_custom_text), "%s", r.text);
+            if (r.officer_id >= 0) {
+                decode_officer_portrait(r.officer_id, &g_scenario, kao_data, kao_size,
+                                        officer_offsets, &dlg_kao);
+            }
         } else if (do_cmd != TURN_CMD_NONE) {
             const ScenarioCastle *before = &g_scenario.castles[cur_castle];
             int rice0 = before->rice, gold0 = before->gold, tr0 = before->troops;
@@ -840,13 +1358,64 @@ int main(int argc, char *argv[]) {
         if (in.quit) running = false;
 
         const YphzKey key = in.key;
-        if (key == YPHZ_KEY_ESCAPE) {
+
+        // 天下統一 ending: any input ends the run.
+        if (g_ending_mode) {
+            if (in.lbutton_pressed || in.rbutton_pressed ||
+                key != YPHZ_KEY_NONE) {
+                running = false;
+            }
+        }
+
+        // --- 合戦 (battle) mode owns all input while active ---
+        if (g_battle_mode) {
+            battle_input(&g_scenario, &in, key);
+
+            // --battle-plan drives the battle headlessly: one command per frame.
+            if (!g_kassen.finished && battle_plan_count > 0) {
+                int idx = frame_count - 1;
+                if (idx >= 0 && idx < battle_plan_count) {
+                    battle_apply_command(&g_scenario,
+                                         (KassenCommand)battle_plan[idx]);
+                }
+            }
+            if (g_kassen.finished) {
+                if (g_battle_finished_frame < 0) {
+                    g_battle_finished_frame = frame_count;
+                }
+                // Auto-apply a couple of frames after the result, so a
+                // --screenshot can still capture the victory/defeat overlay.
+                if (frame_count >= g_battle_finished_frame + 3) {
+                    int to = g_kassen.to_castle;
+                    battle_leave(&g_scenario);
+                    cur_castle = to;
+                    show_castle_card = true;
+                    show_cmd_menu = false;
+                    update_window_title(cur_officer, use_mask, bg_mode, map_mode,
+                                        camera_x, cur_scenario, &g_scenario,
+                                        cur_castle);
+                }
+            }
+        }
+
+        // A victorious capture may unify the realm.
+        if (!g_battle_mode && !g_ending_mode &&
+            kassen_is_unified(&g_scenario)) {
+            ending_enter();
+        }
+
+        if (!g_battle_mode && !g_ending_mode && key == YPHZ_KEY_ESCAPE) {
             // ESC walks back up the UI stack: NPK gallery -> dialogue ->
             // officer roster -> command menu -> castle card -> quit.
             if (gallery_mode) {
                 gallery_mode = false;
             } else if (show_dialog) {
                 show_dialog = false;
+            } else if (list_mode != 0) {
+                list_mode = 0;
+                list_count = 0;
+                list_actor = -1;
+                show_cmd_menu = true;
             } else if (show_officer_list) {
                 show_officer_list = false;
                 roster_select_mode = false;
@@ -863,9 +1432,14 @@ int main(int argc, char *argv[]) {
         }
 
         // Right-click walks back one level, mirroring ESC but never quits.
-        if (in.rbutton_pressed) {
+        if (in.rbutton_pressed && !g_battle_mode && !g_ending_mode) {
             if (show_dialog) {
                 show_dialog = false;
+            } else if (list_mode != 0) {
+                list_mode = 0;
+                list_count = 0;
+                list_actor = -1;
+                show_cmd_menu = true;
             } else if (show_officer_list) {
                 show_officer_list = false;
                 roster_select_mode = false;
@@ -880,7 +1454,11 @@ int main(int argc, char *argv[]) {
         }
 
         // --- NPK016 gallery (L) / item viewer (I) ---
-        if (gallery_mode) {
+        if (g_ending_mode) {
+            // Ending screen is modal.
+        } else if (g_battle_mode) {
+            // 合戦 is modal: gallery / map input is suspended.
+        } else if (gallery_mode) {
             if (key == YPHZ_KEY_LEFT) {
                 gallery_block--;
             } else if (key == YPHZ_KEY_RIGHT) {
@@ -911,13 +1489,17 @@ int main(int argc, char *argv[]) {
         }
 
         // Mode Toggle: M
-        if (!gallery_mode && key == YPHZ_KEY_M) {
+        if (!g_ending_mode && !g_battle_mode && !gallery_mode && key == YPHZ_KEY_M) {
             map_mode = !map_mode;
             dragging = false;
             update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
         }
 
-        if (gallery_mode) {
+        if (g_ending_mode) {
+            // 天下統一 ending is modal.
+        } else if (g_battle_mode) {
+            // 合戦 modal: map/officer input is suspended.
+        } else if (gallery_mode) {
             // NPK gallery is modal: map/officer input is suspended.
         } else if (map_mode) {
             const bool player_castle =
@@ -925,7 +1507,48 @@ int main(int argc, char *argv[]) {
             const bool modal_open = show_dialog || show_officer_list ||
                                     (show_cmd_menu && player_castle);
 
-            if (show_officer_list) {
+            if (list_mode != 0) {
+                // ---- Castle picker (移動 destinations / 出陣 targets) ----
+                int sel = -1;
+                if (key >= YPHZ_KEY_1 && key <= YPHZ_KEY_8) {
+                    int idx = key - YPHZ_KEY_1;
+                    if (idx < list_count) sel = idx;
+                }
+                if (in.lbutton_pressed && in.mouse_inside) {
+                    int h = list_panel_hit(in.mouse_x, in.mouse_y, list_count);
+                    if (h >= 0) sel = h;
+                }
+
+                if (sel >= 0) {
+                    int dest = list_items[sel];
+                    if (list_mode == 1) {
+                        TurnResult r;
+                        turn_move_officer(&g_turn, &g_scenario, cur_castle, dest,
+                                          list_actor, &r);
+                        printf("[TURN] MOVE castle=%d -> %d officer=%d ok=%d\n",
+                               cur_castle, dest, r.officer_id, r.ok ? 1 : 0);
+                        show_turn_result(&r, &show_dialog, &dlg_custom, &dlg_officer,
+                                         dlg_custom_text, sizeof(dlg_custom_text),
+                                         &dlg_kao, &g_scenario, kao_data, kao_size,
+                                         officer_offsets);
+                        show_cmd_menu = false;
+                        update_window_title(cur_officer, use_mask, bg_mode, map_mode,
+                                            camera_x, cur_scenario, &g_scenario, cur_castle);
+                    } else {
+                        if (battle_enter(&g_scenario, cur_castle, dest, list_actor,
+                                         kao_data, kao_size, officer_offsets)) {
+                            if (list_actor >= 0) g_turn.acted[list_actor] = 1;
+                            printf("[KASSEN] attack %d -> %d officer=%d\n",
+                                   cur_castle, dest, list_actor);
+                            show_cmd_menu = false;
+                            show_castle_card = false;
+                        }
+                    }
+                    list_mode = 0;
+                    list_count = 0;
+                    list_actor = -1;
+                }
+            } else if (show_officer_list) {
                 // ---- Officer roster (武将一覧) ----
                 int max_scroll = roster_count - ROSTER_ROWS;
                 if (max_scroll < 0) max_scroll = 0;
@@ -946,29 +1569,57 @@ int main(int argc, char *argv[]) {
                             int oid = roster_ids[idx];
                             if (roster_select_mode) {
                                 // Choose the officer who will execute the
-                                // pending domestic command.
+                                // pending command.
                                 if (!turn_officer_has_acted(&g_turn, oid)) {
-                                    TurnResult r;
-                                    turn_run_command_officer(&g_turn, &g_scenario,
-                                                             cur_castle, roster_cmd,
-                                                             oid, &r);
-                                    printf("[TURN] %s castle=%d officer=%d ok=%d "
-                                           "gold=%+d rice=%+d troops=%+d morale=%+d def=%+d\n",
-                                           turn_cmd_ascii(roster_cmd), cur_castle,
-                                           r.officer_id, r.ok ? 1 : 0,
-                                           r.d_gold, r.d_rice, r.d_troops,
-                                           r.d_morale, r.d_defense);
-                                    show_turn_result(&r, &show_dialog, &dlg_custom,
-                                                     &dlg_officer, dlg_custom_text,
-                                                     sizeof(dlg_custom_text), &dlg_kao,
-                                                     &g_scenario, kao_data, kao_size,
-                                                     officer_offsets);
-                                    show_officer_list = false;
-                                    roster_select_mode = false;
-                                    roster_cmd = TURN_CMD_NONE;
-                                    update_window_title(cur_officer, use_mask, bg_mode,
-                                                        map_mode, camera_x, cur_scenario,
-                                                        &g_scenario, cur_castle);
+                                    if (roster_cmd == TURN_CMD_MOVE) {
+                                        int targets[MAX_CASTLE_CONNS];
+                                        list_count = turn_list_move_targets(
+                                            &g_scenario, cur_castle, player_faction,
+                                            targets, MAX_CASTLE_CONNS);
+                                        for (int t = 0; t < list_count; t++)
+                                            list_items[t] = targets[t];
+                                        list_mode = 1;
+                                        list_actor = oid;
+                                        show_officer_list = false;
+                                        roster_select_mode = false;
+                                        printf("[TURN] MOVE pick officer=%d targets=%d\n",
+                                               oid, list_count);
+                                    } else if (roster_cmd == TURN_CMD_ATTACK) {
+                                        int targets[MAX_CASTLE_CONNS];
+                                        list_count = kassen_list_targets(
+                                            &g_scenario, cur_castle, player_faction,
+                                            targets, MAX_CASTLE_CONNS);
+                                        for (int t = 0; t < list_count; t++)
+                                            list_items[t] = targets[t];
+                                        list_mode = 2;
+                                        list_actor = oid;
+                                        show_officer_list = false;
+                                        roster_select_mode = false;
+                                        printf("[TURN] ATTACK pick officer=%d targets=%d\n",
+                                               oid, list_count);
+                                    } else {
+                                        TurnResult r;
+                                        turn_run_command_officer(&g_turn, &g_scenario,
+                                                                 cur_castle, roster_cmd,
+                                                                 oid, &r);
+                                        printf("[TURN] %s castle=%d officer=%d ok=%d "
+                                               "gold=%+d rice=%+d troops=%+d morale=%+d def=%+d\n",
+                                               turn_cmd_ascii(roster_cmd), cur_castle,
+                                               r.officer_id, r.ok ? 1 : 0,
+                                               r.d_gold, r.d_rice, r.d_troops,
+                                               r.d_morale, r.d_defense);
+                                        show_turn_result(&r, &show_dialog, &dlg_custom,
+                                                         &dlg_officer, dlg_custom_text,
+                                                         sizeof(dlg_custom_text), &dlg_kao,
+                                                         &g_scenario, kao_data, kao_size,
+                                                         officer_offsets);
+                                        show_officer_list = false;
+                                        roster_select_mode = false;
+                                        roster_cmd = TURN_CMD_NONE;
+                                        update_window_title(cur_officer, use_mask, bg_mode,
+                                                            map_mode, camera_x, cur_scenario,
+                                                            &g_scenario, cur_castle);
+                                    }
                                 }
                             } else {
                                 const ScenarioOfficer *o = &g_scenario.officers[oid];
@@ -994,7 +1645,7 @@ int main(int argc, char *argv[]) {
             } else if (show_cmd_menu && player_castle) {
                 // ---- Castle command menu (指令) ----
                 int sel = -1;
-                if (key >= YPHZ_KEY_1 && key <= YPHZ_KEY_5) {
+                if (key >= YPHZ_KEY_1 && key <= YPHZ_KEY_7) {
                     sel = key - YPHZ_KEY_1;
                 }
                 if (in.lbutton_pressed && in.mouse_inside) {
@@ -1214,6 +1865,11 @@ int main(int argc, char *argv[]) {
             draw_centered_image(&gallery_img);
             draw_gallery_overlay(gallery_pack, gallery_block, gallery_npk.count,
                                  gallery_img.width, gallery_img.height);
+        } else if (g_ending_mode) {
+            render_ending();
+        } else if (g_battle_mode) {
+            // 合戦 (Hkeshiki.gp background + portraits + commands).
+            render_battle(&g_scenario);
         } else if (map_mode && japan_map_pixels) {
             // ===============================================================
             // Strategic Map Mode (1696x360 Full Japan Seamless Panorama)
@@ -1362,8 +2018,8 @@ int main(int argc, char *argv[]) {
                 // Footer hint
                 if (card_player) {
                     hal_video_draw_text_sjis(cx + 16, cy + 276,
-                        "\x81\x6d\x31\x2d\x35\x81\x46\x8e\x77\x97\xdf\x20\x20\x45\x53\x43\x81\x46\x96\xdf\x82\xe9\x81\x6e",
-                        6); // ［1-5:指令  ESC:戻る］
+                        "\x81\x6d\x31\x2d\x37\x81\x46\x8e\x77\x97\xdf\x20\x20\x45\x53\x43\x81\x46\x96\xdf\x82\xe9\x81\x6e",
+                        6); // ［1-7:指令  ESC:戻る］
                 } else {
                     hal_video_draw_text_sjis(cx + 16, cy + 276,
                         "\x81\x6d\x88\xc2\x20\x43\x20\x8c\xae\x95\xc2\x20\x20\x20\x81\x6d\x20\x81\x6e\x90\xd8\x91\xd6\x8f\xe9\x92\x72\x20\x20\x20\x31\x2d\x34\x90\xd8\x91\xd6\x8c\x80\x96\x7b\x81\x6e",
@@ -1384,6 +2040,41 @@ int main(int argc, char *argv[]) {
                                     roster_count, roster_scroll,
                                     roster_select_mode ? turn_command_name(roster_cmd)
                                                        : SJIS_ROSTER);
+            }
+
+            // 移動 / 出陣 castle picker overlays the card.
+            if (list_mode != 0) {
+                int rows = list_count;
+                int h = (LIST_TOP - LIST_Y) + rows * LIST_ROW_H + 12;
+                if (h < 60) h = 60;
+                hal_video_fill_rect(LIST_X, LIST_Y, LIST_W, h, 1);
+                hal_video_draw_rect(LIST_X, LIST_Y, LIST_W, h, 6);
+                hal_video_draw_rect(LIST_X + 2, LIST_Y + 2, LIST_W - 4, h - 4, 7);
+                const char *title = (list_mode == 1) ? "\x88\xda\x93\xae"
+                                                     : "\x8f\x6f\x90\x77";
+                hal_video_draw_text_sjis(LIST_X + 10, LIST_Y + 6, title, 6);
+
+                int hover = in.mouse_inside
+                                ? list_panel_hit(in.mouse_x, in.mouse_y, list_count)
+                                : -1;
+                if (rows == 0) {
+                    hal_video_draw_text_sjis(LIST_X + 10, LIST_TOP,
+                        "\x97\xd7\x90\xda\x8f\xe9\x82\xc8\x82\xb5", 3); // 隣接城なし
+                }
+                for (int i = 0; i < rows; i++) {
+                    int cs = list_items[i];
+                    int ry = LIST_TOP + i * LIST_ROW_H;
+                    bool hl = (i == hover);
+                    if (hl) {
+                        hal_video_fill_rect(LIST_X + 4, ry - 2, LIST_W - 8,
+                                            LIST_ROW_H - 2, 5);
+                    }
+                    char line[96];
+                    snprintf(line, sizeof(line), "%d %s  \x95\xba\x97\xcd %d",
+                             i + 1, g_scenario.castles[cs].name_sjis,
+                             g_scenario.castles[cs].troops);
+                    hal_video_draw_text_sjis(LIST_X + 10, ry, line, hl ? 0 : 7);
+                }
             }
 
         } else {
@@ -1563,7 +2254,7 @@ int main(int argc, char *argv[]) {
 
         hal_video_present();
 
-        if (screenshot_path && frame_count == 2) {
+        if (screenshot_path && frame_count == shot_frame) {
             hal_video_save_bmp(screenshot_path);
             printf("[+] Captured engine screenshot to %s\n", screenshot_path);
         }
@@ -1582,6 +2273,15 @@ int main(int argc, char *argv[]) {
     npk_free(&preview_pack);
     free_decoded_image(&gallery_img);
     npk_free(&gallery_npk);
+    free_decoded_image(&s_battle_bg);
+    free_decoded_image(&s_battle_duel);
+    free_decoded_image(&s_battle_kao[0]);
+    free_decoded_image(&s_battle_kao[1]);
+    npk_free(&s_hke_pack);
+    npk_free(&s_hkumi_pack);
+    npk_free(&s_hikback_pack);
+    free_decoded_image(&s_ending_img);
+    npk_free(&s_ending_pack);
     if (bg_hik.pixels) free_decoded_image(&bg_hik);
     if (bg_palace.pixels) free_decoded_image(&bg_palace);
     if (japan_map_pixels) free(japan_map_pixels);

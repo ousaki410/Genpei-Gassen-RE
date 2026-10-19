@@ -6,8 +6,8 @@
 **原生 Linux 移植**工程：把原版 DOS/PC-98 的图像、文本、调色板、剧本数据逐字节
 解析出来，并用一个轻量的 SDL2 引擎在 Linux 上重建其可视化与（逐步完善的）游戏逻辑。
 
-当前进度：**只读可视化层已跑通**（解压 → 调色板 → 字体 → 剧本 → 地图/立绘渲染），
-**游戏逻辑层（内政 / 行军 / 合战 / 音频）尚未实现**。详见文末【进度盘点】。
+当前进度：**可视化层与基础玩法闭环已跑通**（解压 → 调色板 → 字体 → 剧本 → 地图/立绘渲染 →
+内政/移動/出陣/合战/夺城），**音频、存档、势力 AI 与事件脚本尚未实现**。详见文末【进度盘点】。
 
 ---
 
@@ -63,12 +63,18 @@ SDL_VIDEODRIVER=dummy ./bin/yphz_engine --frames 5 --screenshot /tmp/shot.bmp
 │   ├── input.c             #   统一输入层（SDL 键盘/鼠标事件 → InputState）
 │   ├── decompress.c        #   NPK016/NUP4、Kaodata 0x728、LS11 解压器
 │   ├── message.c           #   Message.gp（LS11 容器 + 字符串表 + 显示清洗）
+│   ├── turn.c              #   回合/月份推进 + 开发/征兵/征税/移動
+│   ├── kassen.c            #   合战：战术结算、一騎討、夺城、天下統一判定
+│   ├── npk.c               #   NPK016 通用容器索引（按需解压单块）
 │   └── scenario.c          #   Sndata.gp 剧本解析 + 静态历史数据表
-├── tools/extractor/        # Python 逆向工具（Pillow）
-│   ├── extract_images.py   #   NPK016/NUP4 图像批量解包
-│   ├── extract_kaodata.py  #   90 名武将立绘解包
-│   ├── extract_text.py     #   LS11 文本流解包（Message.gp）
-│   └── extract_palette.py  #   PLD 调色板解码
+├── tools/                  # Python 逆向工具（Pillow）
+│   ├── probe_gp_files.py   #   全部 53 个数据文件的格式/维度分类
+│   ├── analyze_raw_and_exe.py  # EXE 内嵌资产目录提取 + 裸图尺寸推导
+│   └── extractor/          #   各格式的解码参考实现
+│       ├── extract_images.py   #   NPK016/NUP4 图像批量解包
+│       ├── extract_kaodata.py  #   90 名武将立绘解包
+│       ├── extract_text.py     #   LS11 文本流解包（Message.gp）
+│       └── extract_palette.py  #   PLD 调色板解码
 ├── games/yphz/             # 原版游戏数据（PC-98，**不修改**）
 ├── third_party/            # 内置 SDL2 头文件 + libSDL2.so（构建依赖）
 └── Plugins/                # 码表：koei.txt / Big5.txt / GBK.txt
@@ -135,7 +141,12 @@ cmake --build build -j
 | `--test-msg <n>` | — | — | 在战略地图上弹出 `Message.gp` 第 n 条台词对话框（配合 `--screenshot` 无头验证） |
 | `--msg-entry <n>` | — | `0` | `--test-msg` 使用的 LS11 条目编号（Message.gp 共 5 条） |
 | `--faction <n>` | — | 鎌倉所属 | 覆盖玩家操作势力（0..14）；默认取鎌倉（30 号城）的势力 |
-| `--do-cmd <cmd>` | — | — | 无头执行一次内政命令：`develop` / `recruit` / `tax` / `officers` / `end`；自动选中该城首个未行动武将并弹出带立绘的结算框 |
+| `--do-cmd <cmd>` | — | — | 无头执行一次内政命令：`develop` / `recruit` / `tax` / `move` / `officers` / `end`；自动选中该城首个未行动武将并弹出带立绘的结算框（`move` 需配合 `--move-to`） |
+| `--move-to <n>` | — | 首个己方邻城 | `--do-cmd move` 的目标城；必须是当前城的己方相邻城 |
+| `--attack <from,to>` | — | — | 无头发动合战：从 `from` 城进攻相邻敌城 `to`，自动选择城内武力最高的未行动武将，直接进入合战界面 |
+| `--battle-plan <cmds>` | — | — | 与 `--attack` 配合，按帧自动执行战术：`charge` / `volley` / `duel` / `retreat`，逗号分隔（如 `volley,charge`）；用于无头验证胜利、败北、退却与夺城 |
+| `--shot-frame <n>` | — | `2` | 指定 `--screenshot` 在第 n 帧抓图（便于截取合战过程/胜利结算/夺城后的地图） |
+| `--unified` | — | — | 调试用：把 39 城全部划归玩家势力并立即播放「天下統一」结局 CG（用于无头验证） |
 | `--end-turn <n>` | — | `0` | 无头连续推进 n 个月（跨年进位），并弹出最后一月的收入结算框 |
 | `--click <x,y[@frame]>` | — | — | 向 `InputState` 注入一次逻辑坐标左键点击边沿；可重复，亦可用 `;` 串联（`--click '560,75@1;200,103@2'`），默认从第 1 帧起逐帧分配 |
 | `--preview-npk <file> <block>` | — | — | 独立预览任意 NPK016 容器块（居中/全屏渲染），配合 `--screenshot` 无头验证 |
@@ -171,6 +182,30 @@ SDL_VIDEODRIVER=dummy ./bin/yphz_engine --gallery 2 --frames 3 --screenshot /tmp
 # 子任务 5：EXE 资产目录 / 裸图尺寸推导
 python3 tools/analyze_raw_and_exe.py
 python3 tools/analyze_raw_and_exe.py --json > /tmp/raw_layouts.json
+
+# 子任务 6：移動 / 出陣 / 合戦
+# 移動：開発 → 名册 → 目标城（也可直接命令行）
+SDL_VIDEODRIVER=dummy ./bin/yphz_engine --select-castle 30 --do-cmd move --move-to 31 --frames 2 --screenshot /tmp/move.bmp
+SDL_VIDEODRIVER=dummy ./bin/yphz_engine --select-castle 30 \
+    --click '560,153@1;200,103@2;250,152@3' --frames 6 --shot-frame 5 --screenshot /tmp/move_ui.bmp
+
+# 出陣：初始合战界面（Hkeshiki.gp 背景 + 双方立绘 + 兵力/士気/城防）
+SDL_VIDEODRIVER=dummy ./bin/yphz_engine --attack 30,29 --frames 2 --screenshot /tmp/battle.bmp
+
+# 自动战术：斉射 → 突撃，第 3 帧截胜利结算，第 8 帧截夺城后的地图
+SDL_VIDEODRIVER=dummy ./bin/yphz_engine --attack 30,29 --battle-plan volley,charge \
+    --frames 8 --shot-frame 3 --screenshot /tmp/battle_win.bmp
+SDL_VIDEODRIVER=dummy ./bin/yphz_engine --attack 30,29 --battle-plan volley,charge \
+    --frames 9 --shot-frame 8 --screenshot /tmp/capture.bmp
+
+# 一騎討特写（Hkumi.gp）/ 退却结算
+SDL_VIDEODRIVER=dummy ./bin/yphz_engine --attack 30,29 --battle-plan duel \
+    --frames 3 --shot-frame 2 --screenshot /tmp/duel.bmp
+SDL_VIDEODRIVER=dummy ./bin/yphz_engine --attack 30,29 --battle-plan retreat \
+    --frames 6 --shot-frame 2 --screenshot /tmp/retreat.bmp
+
+# 天下統一结局 CG（强制统一）
+SDL_VIDEODRIVER=dummy ./bin/yphz_engine --unified --frames 2 --screenshot /tmp/ending.bmp
 ```
 
 ### 键盘操作
@@ -180,9 +215,13 @@ python3 tools/analyze_raw_and_exe.py --json > /tmp/raw_layouts.json
 | 通用 | `M` | 战略地图 ⇄ 武将立绘 切换 |
 | 通用 | `L` | 打开/关闭 NPK016 画廊（Logo / 事件 CG / 家宝 / 合战景等 8 个包） |
 | 通用 | `I` | 直接打开家宝图标画廊（`Mainitem.gp`，19 × 64×64） |
-| 通用 | `ESC` | 依次返回：画廊 → 结算对话框 → 武将一览 → 指令菜单 → 城池情报卡 → 退出 |
-| 地图 | `1`–`5` | **指令菜单打开时**：开发 / 征兵 / 征税 / 武将 / 终了 |
+| 通用 | `ESC` | 依次返回：结局画面 → 画廊 → 移动/出陣目标列表 → 结算对话框 → 武将一览 → 指令菜单 → 城池情报卡 → 退出 |
+| 地图 | `1`–`7` | **指令菜单打开时**：开发 / 征兵 / 征税 / 移動 / 出陣 / 武将 / 终了 |
 | 地图 | `1`–`4` | **指令菜单关闭时**：切换剧本 |
+| 地图 | `ESC` / 右键 | 指令菜单 → 城池情报卡 → 退出；移動/出陣目标列表打开时先关闭列表 |
+| 合戦 | `1` / `2` / `3` / `4` | 突撃 / 斉射 / 一騎討 / 退却（也可直接点击底部按钮） |
+| 合戦 | `ESC` | 从战场退却（等同 `4`） |
+| 合戦 | 左键 / 任意键 | 胜利/败北/退却结算框出现后，关闭并结算夺城 |
 | 地图 | `[` / `]` | 上一 / 下一城池 |
 | 地图 | `O` / `Enter` | 查看当前城城主（跳转立绘） |
 | 地图 | `C` / `Space` | 开/关城池情报卡（己方城池会同时弹出指令菜单） |
@@ -205,11 +244,13 @@ python3 tools/analyze_raw_and_exe.py --json > /tmp/raw_layouts.json
 | 操作 | 功能 |
 |---|---|
 | 左键点击城池旗标 | 命中测试选中该城（`camera_x` + 屏幕坐标 → 1696x360 世界坐标）并展开情报卡；己方城池同时弹出指令菜单 |
-| 左键点击指令菜单项 | 执行开发 / 征兵 / 征税 / 武将一览 / 评定终了 |
-| 左键点击名册行 | 查看武将立绘与能力（或作为命令执行者） |
+| 左键点击指令菜单项 | 执行开发 / 征兵 / 征税 / 移動 / 出陣 / 武将一览 / 评定终了 |
+| 左键点击名册行 | 查看武将立绘与能力（或作为命令执行者；移動/出陣时进入目标城列表） |
+| 左键点击目标城列表行 | 选择移動目的地或出陣目标；出陣立即进入合战界面 |
+| 合战界面底部按钮 | 突撃 / 斉射 / 一騎討 / 退却；结算框点击关闭并结算夺城 |
 | 左键点击空白处拖拽 | 拖动平移全景地图（地形跟随指针） |
 | 指针靠近窗口左右边缘 | 自动平滑卷动地图 |
-| 右键点击 | 返回上一级（结算框 → 名册 → 指令菜单 → 情报卡） |
+| 右键点击 | 返回上一级（目标城列表 → 名册 → 指令菜单 → 情报卡） |
 
 > 输入实现：`src/input.c` 独占所有 `SDL_PollEvent`/`SDL_GetMouseState` 调用，向主循环
 > 输出一份 `InputState`（键盘边沿、逻辑坐标 640x400 的鼠标位置/位移、左右键边沿）。
@@ -396,7 +437,7 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
 
 ### 一、源码文件职责与已实现功能
 
-**`src/main.c`（1599 行）— 入口与渲染主循环**
+**`src/main.c`（2299 行）— 入口与渲染主循环**
 - CLI 参数解析（见上表）+ `YPHZ_DATA_DIR` 环境变量。
 - 资源装载 `load_file()`：`Mainpal.pld`、`JIS.FNT`/`FONT.CHR`、`Main.exe`（读
   `0x4D3BB` 处 90 个立绘偏移表）、`Kaodata.gp`、`Hikback.gp`、`Maincmd2.gp`、
@@ -411,18 +452,26 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
 - **武将立绘模式**：401 名武将逐个浏览、立绘（含遮罩透明）、3 种背景、完整属性
   面板（姓名/假名/年龄/忠节/兵力/武力/知才/优雅/弓術/兵質/身份/势力/居城）、
   16 色调色板色块。
-- 截图导出（阶段帧 BMP）、固定 ~60 FPS 主循环。
+- 截图导出（阶段帧 BMP，`--shot-frame` 指定帧号）、固定 ~60 FPS 主循环。
 - **台词对话框**：`Message.gp` 文本经 SJIS 半/全角软换行，绘制于画面底部（光荣
   风格金/白描边深蓝窗），角标显示 `【会話】[entry:index]`。
-- **内政 UI（子任务 3）**：己方城池情报卡右侧弹出 `指令` 菜单（1-5 / 鼠标悬停高亮），
+- **内政 UI（子任务 3/6）**：己方城池情报卡右侧弹出 `指令` 菜单（1-7 / 鼠标悬停高亮），
   名册模态窗（统率/武力/知谋，未行动者高亮、已行动者暗显，↑↓ 滚动），
-  带武将立绘的结算对话框（`【結果】`，立绘 128x160 + 右侧战报），顶栏实时显示 `年/月`。
+  带武将立绘的结算对话框（`【結果】`，立绘 128x160 + 右侧战报），顶栏实时显示 `年/月`；
+  `移動`/`出陣` 追加目标城列表模态窗。
+- **合战 UI（子任务 6）**：`render_battle()` 绘制 `Hkeshiki.gp` 背景、双方立绘与
+  兵力/士気/城防条、战况日志、四战术按钮，叠加 `Hkumi.gp`/`Hikback.gp` 一騎討特写
+  与胜利/败北/退却结算框；`render_ending()` 绘制天下統一结局 CG。
 
-**`src/turn.c`（317 行）— 回合与内政状态机**
+**`src/turn.c`（443 行）— 回合与内政/军事状态机**
 - `TurnState`：玩家势力、`year/month`（与 `Scenario` 双向同步）、401 人 `acted`
   位图（本回合是否已行动）。
 - `turn_find_idle_officer()`：优先城主，其次按编号取城内首个未行动武将。
 - `turn_list_castle_officers()`：枚举某势力驻某城的全部在籍武将（名册/选人用）。
+- `turn_list_move_targets()` / `turn_find_attack_officer()`：己方邻城列表 / 城内武力最高
+  的未行动攻方武将（供 `出陣` 与无头 `--attack` 自动选将）。
+- `turn_move_officer()`：向己方邻城转移 1/3 兵力（至少 1），消耗行动；城主离开时
+  自动改立城内下一名武将。
 - 三条内政命令（消耗执行武将的 action）：
   - **開発**：花费金 = `200 + 石高/50`；石高 `+100+政治*3+知謀`，城防 `+1+政治/25`。
   - **徴兵**：花费金 `300+兵力/2`、兵糧 `100+兵力/4`；兵力 `+100+統率*2`，
@@ -434,7 +483,24 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
   重置全员 `acted`。战报只汇总玩家势力收入。
 - `turn_run_command_officer()`：可指定执行武将（名册点选），`-1` 则自动选人。
 
-**`src/npk.c`（78 行）— NPK016 通用容器访问**
+**`src/kassen.c`（382 行）— 合战模块**
+- `KassenState`：攻/守城与势力、双方主将、城内初始兵力、野战兵力、士気、城防、
+  回合计数、`finished`/`victory`/`retreated`、最近一次伤亡与一览文本。
+- `kassen_list_targets()` / `kassen_can_attack()`：己方城的敌方邻城列表 / 合法性校验。
+- `kassen_begin()`：守方守军 = 城内兵力、野战兵力 = 3/4（不足 80 全出），攻方同理；
+  随机种子由（攻/守城 ID、攻方武将、月份）确定性生成，便于无头复现。
+- `kassen_command()` 四战术：
+  - **突撃**：高杀伤、自损也高（武力/統率主导）；
+  - **斉射**：稳定削减守方兵力与城防；
+  - **一騎討**：双方主将按武力差一掷定胜负，败方兵力重创并置一騎討特写标志；
+  - **退却**：保留攻方兵力直接结算为撤退。
+  - 守方兵力或城防归零 → 攻方胜利；攻方兵力归零 → 败北（守方保留城）。
+- `kassen_apply_result()`：胜利则转移城池归属/城主/守军，残存守将退往旧势力其他
+  城池（无城则退隐）；攻方残部返回出发城。撤退时守方原状、攻方兵力回城。
+- `kassen_is_unified()`：39 城同属一势力则为真（触发天下統一结局）。
+- `kassen_command_ascii()` / `kassen_text()`：无头日志与 SJIS 结算文本。
+
+**`src/npk.c`（64 行）— NPK016 通用容器访问**
 - `npk_load()` 扫描文件中全部 `NPK016` magic 并记录块偏移；`npk_decode()` 按块
   调用 `nup4_decompress_block()`；`npk_free()` 释放容器。
 - 供 `--preview-npk`、`L`/`I` 画廊与后续合战背景按需使用，避免一次性占用数 MB 解码缓冲。
@@ -453,7 +519,7 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
   逻辑坐标）、`has_mouse_focus()`（`SDL_WINDOW_MOUSE_FOCUS`）。原先未被调用的
   `poll_event()` 死代码已移除。
 
-**`src/input.c`（114 行）— 统一输入层**
+**`src/input.c`（121 行）— 统一输入层**
 - `input_poll(InputState*)`：一次排空全部 SDL 事件，向主循环输出键盘边沿
   （抽象为 `YphzKey`）、鼠标逻辑坐标 640x400 位置与帧间位移、左右键按下/边沿。
 - 键盘只取 `SDL_KEYDOWN` 非重复事件；鼠标位置/按键用 `SDL_GetMouseState()` 采样，
@@ -490,7 +556,8 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
 `Scenario`）、`decompress.h`（`ImageDecoded` + `ls11_decompress_stream`）、
 `hal_video.h`（`ColorRGBA` + HAL/字体 API）、`input.h`（`YphzKey`/`InputState`）、
 `message.h`（`MessageFile`/`MessageEntry`）、`turn.h`（`TurnState`/`TurnCommand`/
-`TurnResult`）、`sdl_compat.h`（SDL2/SDL3 引入切换）。
+`TurnResult`）、`kassen.h`（`KassenState`/`KassenCommand`）、`npk.h`（`NpkFile`）、
+`sdl_compat.h`（SDL2/SDL3 引入切换）。
 所有结构体 `#pragma pack(push,1)`。
 
 **`tools/extractor/`（Python 参考实现）**
@@ -501,7 +568,11 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
 | `extract_images.py` | 309 | NPK016/NUP4 解码（`decompress.c` 的 Python 对照实现），批量解包 8 个 `.gp`、生成道具表与片头画面 |
 | `extract_kaodata.py` | 201 | Kaodata 0x728 解码（对照实现），导出索引 PNG / 透明 RGBA PNG / 10x9 立绘表 + manifest |
 | `extract_palette.py` | 76 | `Mainpal.pld`/`Losepal.pld`（4 bank × 16 色，BGR）→ JSON + 色板 PNG |
-| `probe_gp_files.py` | 285 | 53 个资产文件的 Magic/格式侦察（LS11/NPK016/MZ/COM/PLD/字体/文本/raw），表格 + JSON + CSV 输出，无第三方依赖 |
+
+`tools/` 根目录另有两个独立侦察脚本（非本目录）：`probe_gp_files.py`（285 行；53 个资产
+文件的 Magic/格式侦察，表格 + JSON + CSV）与 `analyze_raw_and_exe.py`（459 行；提取
+`Main.exe`/`Open.exe`/`End.exe` 内嵌资产目录，并对 11 个裸图按 4bpp/8bpp/1bpp 推导
+`(w,h,count)`，自动识别 `Hchikei.gp` 的 100×100 图块地图特例）。
 
 ### 二、已跑通模块 ✅
 
@@ -515,16 +586,19 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
 - 城池情报卡、BMP 截图、CMake 构建（内置 SDL2）。
 - 统一输入层：键盘（`YphzKey`）+ 鼠标（点击选城 / 拖拽 / 边缘卷动 / 右键关闭情报卡）。
 - LS11 文本解压（`Message.gp`，C 实现，与 Python 逐字节一致）+ 底部光荣风格台词对话框。
-- 回合与内政闭环：指令菜单（開発/徴兵/徴税/武将/終了）、武将名册与点选执行、
+- 回合与内政闭环：指令菜单（開発/徴兵/徴税/移動/出陣/武将/終了）、武将名册与点选执行、
   带立绘的结算对话框、按月推进与跨年、全城收入/季度石高增长、全员行动重置。
+- 合战闭环：`Hkeshiki.gp` 全屏战场背景 + 双方 `Kaodata.gp` 立绘/兵力/士気/城防条，
+  突撃/斉射/一騎討/退却四战术、`Hkumi.gp`/`Hikback.gp` 一騎討特写、夺城与势力转移、
+  天下統一结局 CG（`Mainevt.gp`）。
 
 ### 三、尚未实现 / TODO ⛔
 
 | 领域 | 现状 |
 |---|---|
 | **事件循环/输入** | ✅ 已抽出统一输入层 `src/input.c`（`input_poll(InputState*)`）：抽象键盘 `YphzKey` + 鼠标（逻辑坐标/位移/左右键边沿）；地图支持点击选城、拖拽/边缘/键盘卷动。仍未实现文本输入、手柄、快捷键重映射 |
-| **游戏逻辑** | ✅ 回合/月份推进与内政（开发/征兵/征税/换月）已完成；仍无行军/移动、外交、势力 AI |
-| **合战系统** | **完全未实现**：无战术地图、部队编成、战斗结算、AI |
+| **游戏逻辑** | ✅ 回合/月份推进与内政（开发/征兵/征税/换月）、城内武将移動、出陣与夺城已完成；仍无外交、势力 AI 与跨城行军路线 |
+| **合战系统** | ✅ 基础闭环已完成：战场背景、双方立绘与兵力/士気/城防、突撃/斉射/一騎討/退却、一騎討特写、夺城/势力转移、天下統一结局；仍无部队编成、战术地图与合战 AI |
 | **势力 AI** | 未实现 |
 | **存档** | `Savedata.gp` 未解析/未写入 |
 | **音频** | **完全未实现**：`Music.gp`/`Opmusic.gp`/`Edmusic.gp` 未解析，FM 驱动 `Fmdrv.com` 未逆向，无 MIDI/音效 |
@@ -532,7 +606,7 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
 | **未解析的数据文件** | `Maincmd.gp`、`Mainobj.gp`、`Kisetsu.gp`、`Montage.gp`、`Opendat.gp`、`Enddat.gp`、`Disk-*.gp` 等裸格式未解压；`Mainitem.gp` 已可画廊预览但未接入数值系统 |
 | **未逆向的程序** | `Main.exe`/`Genpei.com`/`Open.exe`/`End.exe` 的主循环、菜单、合战逻辑 |
 
-### 四、2200G 上的子任务（1–5 已完成）
+### 四、2200G 上的子任务（1–6 已完成）
 
 > 说明：当前全部渲染为软件 blit（640x400），2200G（Ryzen 3 2200G + Vega 8）完全
 > 够用；以下均不涉及重 GPU/着色器开发，先打通**逻辑层**。
@@ -562,9 +636,11 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
 **子任务 3 — 回合推进 + 最小内政闭环（含武将头像联动）— ✅ 已完成**
 - 新增 `include/turn.h` / `src/turn.c`：维护玩家势力、`year`/`month`（与 `Scenario`
   同步）、401 人 `acted` 标记；提供首个未行动武将选择、城内武将枚举、命令执行。
-- 己方城池情报卡右侧弹出光荣风格 `指令` 菜单（`1`–`5` 或鼠标点击；`ESC`/右键返回）。
+- 己方城池情报卡右侧弹出光荣风格 `指令` 菜单（`1`–`7` 或鼠标点击；`ESC`/右键返回）。
   - `開発`：金 → 石高 + 城防；`徴兵`：金 + 兵糧 → 兵力（受 `500+石高/8` 上限）；
   - `徴税`：金 +，士気 −（原数据无民忠字段，以士気代理）；
+  - `移動`：选执行武将 → 己方邻城列表 → 转移该将 1/3 兵力（至少 1）；
+  - `出陣`：选执行武将 → 敌方邻城列表 → 进入合战；
   - `武将`：城内武将名册（统率/武力/知谋，未行动者高亮），点选查看立绘；
   - `終了`：`month++`、跨年进位、全城月度金收入 + 季度石高增长、全员行动重置。
 - 命令执行前先进入名册选择执行武将；结果对话框调用 `Kaodata.gp` 0x728 解码器，
@@ -595,5 +671,39 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
 - 验收：`--preview-npk Hkeshiki.gp 0` 渲染 4 张合战景之一（640×400，含左右上角
   头像框与底部指令框）；`--gallery 2` 渲染家宝图标画廊；`-Wall -Wextra` 零警告。
 
-补充（非本期）：**音频**（先逆向 `Fmdrv.com` + `Music.gp` 的 FM 音源格式）与
-**合战战术界面**属于更大体量的独立方向，建议在以上 3 项之后再立项。
+**子任务 6 — 移動 / 出陣 + 合战模块（战场、战术、一騎討、夺城、天下統一）— ✅ 已完成**
+- 内政菜单由 5 项扩为 7 项：`開発 / 徴兵 / 徴税 / 移動 / 出陣 / 武将 / 終了`，键位 `1`–`7`，
+  保持“菜单打开时优先于剧本切换”的既有约定。選擇执行武将后弹出**目标城列表**
+  （`移動`=己方邻城，`出陣`=敌方邻城），支持 `1`–`8` 与鼠标点选，`ESC`/右键取消。
+- `include/turn.h` / `src/turn.c`：新增 `TURN_CMD_MOVE`/`TURN_CMD_ATTACK`、
+  `turn_list_move_targets()`、`turn_find_attack_officer()`、`turn_move_officer()`；
+  移動按 1/3 兵力转移并消耗行动；若城主离开则自动改立城内下一名武将。
+- 新增 `include/kassen.h` / `src/kassen.c`（约 380 行）：
+  - `KassenState`：攻/守势力、主将、兵力、士気、城防、回合数、决胜/退却标志；
+  - 守方野战兵力 = 城内 3/4（不足 80 时全出），攻方同理；随机种子由城 ID/武将/月份
+   确定性生成，便于无头复现；
+  - `突撃`（高杀伤、高自损）、`斉射`（稳定削守方）、`一騎討`（按武力差一掷定胜负，
+    败方损失惨重）、`退却`（保留兵力撤退）；
+  - 守方兵力或城防归零 → 攻方胜利；攻方兵力归零 → 败北；
+  - `kassen_apply_result()`：夺城后转移城池归属、城主与守军，残存守将退往旧势力
+    其他城池（无城则退隐）；攻方部队返回出发城；
+  - `kassen_is_unified()`：39 城同属一个势力 → 进入「天下統一」结局 CG。
+- 合战界面（`render_battle`）：`Hkeshiki.gp` 4 张 640×400 战场背景轮换；顶部双方
+  主将名/势力；左右 `Kaodata.gp` 128×160 立绘；兵力/士気/城防条；中部战况日志；
+  底部 4 个战术按钮。一騎討时按回合奇偶叠加 `Hkumi.gp`（208×160）或
+  `Hikback.gp`（288×176）特写，并显示「攻方/守方 勝利」。
+- 新增 CLI：`--attack <from,to>`（自动选城内武力最高的未行动武将）、
+  `--battle-plan <charge|volley|duel|retreat,...>`（每帧执行一条）、
+  `--move-to <n>`、`--shot-frame <n>`（默认 2）、`--unified`（强制统一以验证结局）。
+- 验收（`SDL_VIDEODRIVER=dummy`，零警告）：
+  - `--attack 30,29`：鎌倉 猪俣則綱（165） vs 伊豆 大庭景親（200），城防 450；
+  - `--battle-plan volley,charge`：斉射 48/118 → 突撃 98/82，守军归零，
+    `victory=1`，伊豆城防 407、归属转为势力 0、城主 猪俣則綱、守军 19；
+  - `--battle-plan duel`：一騎討特写正常渲染（本次守方胜，攻方 165→4）；
+  - `--battle-plan retreat`：`retreated=1`，伊豆仍属势力 14、兵力 200 不变；
+  - 鼠标链路 `--click '560,153@1;200,103@2;250,152@3'` → `[TURN] MOVE 30 -> 31`，
+    兵力 220→147、目标城 200→273；`560,179@1` 同链路 → 出陣 30→27 并进入合战；
+  - `--unified`：39 城全部划归势力 0，显示 `Mainevt.gp` block 4 + 「天下統一」结局。
+
+补充（非本期）：**音频**（先逆向 `Fmdrv.com` + `Music.gp` 的 FM 音源格式）、
+**存档**（`Savedata.gp`）、**势力 AI / 战略行军**与**事件脚本**（`Mainevt.gp`）仍属后续方向。

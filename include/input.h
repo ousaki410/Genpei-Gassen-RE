@@ -39,14 +39,15 @@ typedef enum {
     YPHZ_KEY_LEFTBRACKET,
     YPHZ_KEY_RIGHTBRACKET,
     /* The scenario hot-keys are kept contiguous so that
-     * (key >= YPHZ_KEY_1 && key <= YPHZ_KEY_7) and (key - YPHZ_KEY_1) work. */
+     * (key >= YPHZ_KEY_1 && key <= YPHZ_KEY_8) and (key - YPHZ_KEY_1) work. */
     YPHZ_KEY_1,
     YPHZ_KEY_2,
     YPHZ_KEY_3,
     YPHZ_KEY_4,
     YPHZ_KEY_5,
     YPHZ_KEY_6,
-    YPHZ_KEY_7
+    YPHZ_KEY_7,
+    YPHZ_KEY_8
 } YphzKey;
 
 typedef struct {

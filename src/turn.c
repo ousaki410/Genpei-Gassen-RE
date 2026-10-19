@@ -10,6 +10,8 @@
 #define SJIS_DEVELOP   "\x8a\x4a\x94\xad"  // 開発
 #define SJIS_RECRUIT   "\x92\xa5\x95\xba"  // 徴兵
 #define SJIS_TAX       "\x92\xa5\x90\xc5"  // 徴税
+#define SJIS_MOVE      "\x88\xda\x93\xae"  // 移動
+#define SJIS_ATTACK    "\x8f\x6f\x90\x77"  // 出陣
 #define SJIS_OFFICERS  "\x95\x90\x8f\xab"  // 武将
 #define SJIS_END       "\x8f\x49\x97\xb9"  // 終了
 
@@ -20,6 +22,7 @@
 #define SJIS_MORALE    "\x8e\x6d\x8b\x43"  // 士気
 #define SJIS_DEFENSE   "\x8f\xe9\x96\x68"  // 城防
 #define SJIS_DONE      "\x8a\xae\x97\xb9"  // 完了
+#define SJIS_NO_NEIGH  "\x97\xd7\x90\xda\x8f\xe9\x82\xc8\x82\xb5" // 隣接城なし
 #define SJIS_NO_OFF    "\x91\xce\x8f\xdb\x95\x90\x8f\xab\x82\xc8\x82\xb5" // 対象武将なし
 #define SJIS_ALL_ACTED "\x91\x53\x88\xf5 \x8d\x73\x93\xae\x8d\xcf"        // 全員 行動済
 #define SJIS_NO_GOLD   "\x8b\xe0\x95\x73\x91\xab"                        // 金不足
@@ -36,6 +39,8 @@ const char* turn_command_name(TurnCommand cmd) {
         case TURN_CMD_DEVELOP:  return SJIS_DEVELOP;
         case TURN_CMD_RECRUIT:  return SJIS_RECRUIT;
         case TURN_CMD_TAX:      return SJIS_TAX;
+        case TURN_CMD_MOVE:     return SJIS_MOVE;
+        case TURN_CMD_ATTACK:   return SJIS_ATTACK;
         case TURN_CMD_OFFICERS: return SJIS_OFFICERS;
         case TURN_CMD_END:      return SJIS_END;
         default:                return "";
@@ -97,6 +102,127 @@ int turn_list_castle_officers(const Scenario *sc, int faction_id, int castle_id,
         }
     }
     return n;
+}
+
+int turn_list_move_targets(const Scenario *sc, int from_castle, int faction_id,
+                           int *out, int max_out) {
+    if (!sc || !out || max_out <= 0) return 0;
+    if (from_castle < 0 || from_castle >= sc->num_castles) return 0;
+
+    const ScenarioCastle *from = &sc->castles[from_castle];
+    int n = 0;
+    for (int i = 0; i < from->num_conns && n < max_out; i++) {
+        int to = from->conns[i];
+        if (to < 0 || to >= sc->num_castles) continue;
+        if (sc->castles[to].faction_id == faction_id) out[n++] = to;
+    }
+    return n;
+}
+
+int turn_find_attack_officer(const Scenario *sc, const TurnState *ts,
+                             int castle_id) {
+    if (!sc || !ts || castle_id < 0 || castle_id >= sc->num_castles) return -1;
+
+    int best = -1;
+    int best_war = -1;
+    for (int i = 0; i < sc->num_officers; i++) {
+        const ScenarioOfficer *o = &sc->officers[i];
+        if (!officer_serves_at(o, ts->player_faction, castle_id)) continue;
+        if (turn_officer_has_acted(ts, i)) continue;
+        if (o->war > best_war) {
+            best_war = o->war;
+            best = i;
+        }
+    }
+    if (best >= 0) return best;
+
+    // Fall back to the lord even if flagged as acted (headless convenience).
+    int lord = sc->castles[castle_id].lord_officer_id;
+    if (lord >= 0 && lord < sc->num_officers &&
+        officer_serves_at(&sc->officers[lord], ts->player_faction, castle_id)) {
+        return lord;
+    }
+    return -1;
+}
+
+bool turn_move_officer(TurnState *ts, Scenario *sc, int from_castle, int to_castle,
+                       int officer_id, TurnResult *res) {
+    if (!ts || !sc || !res) return false;
+
+    memset(res, 0, sizeof(*res));
+    res->cmd = TURN_CMD_MOVE;
+    res->castle_id = from_castle;
+    res->officer_id = -1;
+
+    if (from_castle < 0 || from_castle >= sc->num_castles ||
+        to_castle < 0 || to_castle >= sc->num_castles) {
+        snprintf(res->text, sizeof(res->text), SJIS_NO_NEIGH);
+        return false;
+    }
+
+    ScenarioCastle *from = &sc->castles[from_castle];
+    ScenarioCastle *to = &sc->castles[to_castle];
+    if (from->faction_id != ts->player_faction ||
+        to->faction_id != ts->player_faction) {
+        snprintf(res->text, sizeof(res->text), SJIS_LORD_ONLY);
+        return false;
+    }
+
+    bool connected = false;
+    for (int i = 0; i < from->num_conns; i++) {
+        if (from->conns[i] == to_castle) { connected = true; break; }
+    }
+    if (!connected) {
+        snprintf(res->text, sizeof(res->text), SJIS_NO_NEIGH);
+        return false;
+    }
+
+    int oid = officer_id;
+    if (oid < 0) oid = turn_find_idle_officer(sc, ts, from_castle);
+    if (oid < 0 || oid >= sc->num_officers ||
+        !officer_serves_at(&sc->officers[oid], ts->player_faction, from_castle)) {
+        snprintf(res->text, sizeof(res->text), SJIS_NO_OFF);
+        return false;
+    }
+    if (turn_officer_has_acted(ts, oid)) {
+        res->officer_id = oid;
+        snprintf(res->text, sizeof(res->text), "%s\n" SJIS_ALL_ACTED,
+                 sc->officers[oid].full_name_sjis);
+        return false;
+    }
+
+    // Transfer roughly a third of the garrison, keeping at least 20 behind.
+    int troops = from->troops / 3;
+    if (troops < 50) troops = from->troops / 2;
+    if (troops > from->troops - 20) troops = from->troops - 20;
+    if (troops < 0) troops = 0;
+
+    from->troops -= troops;
+    to->troops += troops;
+    sc->officers[oid].castle_id = to_castle;
+    ts->acted[oid] = 1;
+
+    // If the lord left, appoint the next officer still stationed there.
+    if (from->lord_officer_id == oid) {
+        int new_lord = -1;
+        for (int i = 0; i < sc->num_officers; i++) {
+            const ScenarioOfficer *o = &sc->officers[i];
+            if (i != oid && officer_serves_at(o, ts->player_faction, from_castle)) {
+                new_lord = i;
+                break;
+            }
+        }
+        if (new_lord >= 0) from->lord_officer_id = new_lord;
+    }
+
+    res->officer_id = oid;
+    res->ok = true;
+    res->d_troops = troops;
+    snprintf(res->text, sizeof(res->text),
+             "%s\n" SJIS_MOVE " " SJIS_DONE "\n"
+             SJIS_TROOPS " +%d  ->  %s",
+             sc->officers[oid].full_name_sjis, troops, to->name_sjis);
+    return true;
 }
 
 int turn_develop_cost(const ScenarioCastle *cs) {

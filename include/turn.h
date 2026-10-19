@@ -26,6 +26,8 @@ typedef enum {
     TURN_CMD_DEVELOP,   // 開発  : spend gold -> raise kokudaka (rice) + defense
     TURN_CMD_RECRUIT,   // 徴兵  : spend gold + provisions -> raise troops
     TURN_CMD_TAX,       // 徴税  : raise gold, lower morale
+    TURN_CMD_MOVE,      // 移動  : transfer an officer + troops to an own castle
+    TURN_CMD_ATTACK,    // 出陣  : march on an adjacent enemy castle (starts 合戦)
     TURN_CMD_OFFICERS,  // 武将  : UI-only officer roster (no action consumed)
     TURN_CMD_END        // 終了  : advance the calendar + settle income
 } TurnCommand;
@@ -66,6 +68,19 @@ int turn_find_idle_officer(const Scenario *sc, const TurnState *ts, int castle_i
 // Returns the number written to ids (up to max_ids), ordered by officer id.
 int turn_list_castle_officers(const Scenario *sc, int faction_id, int castle_id,
                               int *ids, int max_ids);
+
+// Enumerate adjacent castles owned by the same faction (移動 destinations).
+int turn_list_move_targets(const Scenario *sc, int from_castle, int faction_id,
+                           int *out, int max_out);
+
+// Highest-war idle officer at `castle_id` (for 出陣), -1 when none is free.
+int turn_find_attack_officer(const Scenario *sc, const TurnState *ts,
+                             int castle_id);
+
+// Transfer `officer_id` plus part of the garrison from `from_castle` to a
+// connected friendly castle. Consumes the officer's action.
+bool turn_move_officer(TurnState *ts, Scenario *sc, int from_castle, int to_castle,
+                       int officer_id, TurnResult *res);
 
 // Command costs / caps (used by the UI to grey out or explain actions).
 int turn_develop_cost(const ScenarioCastle *cs);

@@ -139,6 +139,7 @@ add_executable(yphz_engine
     src/message.c
     src/scenario.c
     src/turn.c
+    src/kassen.c
     src/npk.c)
 
 target_include_directories(yphz_engine PRIVATE
