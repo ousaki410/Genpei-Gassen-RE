@@ -19,7 +19,7 @@
 //
 // Layout (little-endian, #pragma pack(1)):
 //     char     magic[8]      "YPHZSNAP"
-//     uint32_t version       1
+//     uint32_t version       2
 //     int32_t  scenario_idx
 //     int32_t  year, month
 //     int32_t  num_castles, num_officers
@@ -28,6 +28,7 @@
 //     int32_t  player_faction
 //     int32_t  turn_year, turn_month
 //     uint8_t  acted[MAX_OFFICERS]
+//     TreasureState treasures        (version 2, 子任务 9)
 //
 // Loading restores every mutable field, so a reloaded game is byte-for-byte
 // identical to the saved one. The static metadata (title_sjis, faction defs,
@@ -35,7 +36,7 @@
 // ---------------------------------------------------------------------------
 
 #define SAVE_MAGIC    "YPHZSNAP"
-#define SAVE_VERSION  1u
+#define SAVE_VERSION  2u
 
 // Write the current game to `path`. Returns false on I/O failure.
 bool save_game(const char *path, const Scenario *sc, const TurnState *ts);

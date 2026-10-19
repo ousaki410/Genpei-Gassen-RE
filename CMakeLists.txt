@@ -144,7 +144,8 @@ add_executable(yphz_engine
     src/event.c
     src/save.c
     src/opening.c
-    src/npk.c)
+    src/npk.c
+    src/treasure.c)
 
 target_include_directories(yphz_engine PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/include")

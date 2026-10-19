@@ -16,6 +16,7 @@
 #include "opening.h"
 #include "npk.h"
 #include "scenario.h"
+#include "treasure.h"
 
 static char s_asset_dir[256] = "games/yphz";
 
@@ -75,7 +76,7 @@ static void update_window_title(int cur_officer, bool use_mask, int bg_mode, boo
     if (map_mode) {
         const char *c_name = (sc && cur_castle >= 0 && cur_castle < sc->num_castles) ? sc->castles[cur_castle].name_sjis : "";
         snprintf(title, sizeof(title),
-                 "《源平合战》[剧本%d] 选城:%s | 视口X:%04d/1056 | 左右:平移 ［］:换城 1-4:换剧本 C:详情 T:会话 M:武将 O:查看城主",
+                 "《源平合战》[剧本%d] 选城:%s | 视口X:%04d/1056 | 左右:平移 ［］:换城 1-4:换剧本 C:详情 T:会话 M:武将 O:查看城主 B:家宝",
                  scenario_idx + 1, c_name, camera_x);
     } else {
         const char *bg_names[] = {"纯黑展台", "军议大殿(640x400)", "野战军营(288x176)"};
@@ -431,6 +432,226 @@ static void draw_gallery_overlay(int pack, int block, int count,
 }
 
 // ---------------------------------------------------------------------------
+// 子任务 9: 家宝 (Mainitem.gp) + strategic road overlay
+// ---------------------------------------------------------------------------
+
+#define TREASURE_GRID_COLS 5
+#define TREASURE_GRID_X    150
+#define TREASURE_GRID_Y    36
+#define TREASURE_CELL      68
+#define TREASURE_PANEL_X   110
+#define TREASURE_PANEL_Y   14
+#define TREASURE_PANEL_W   420
+#define TREASURE_PANEL_H   364
+
+static NpkFile      s_item_pack;
+static ImageDecoded s_item_img[TREASURE_COUNT];
+static bool         s_items_ready = false;
+
+static bool ensure_items_loaded(void) {
+    if (s_items_ready) return true;
+    if (!npk_load(&s_item_pack, s_asset_dir, "Mainitem.gp")) {
+        fprintf(stderr, "[WARN] Mainitem.gp unavailable; 家宝 icons disabled\n");
+        return false;
+    }
+    int n = s_item_pack.count;
+    if (n > TREASURE_COUNT) n = TREASURE_COUNT;
+    for (int i = 0; i < n; i++) {
+        npk_decode(&s_item_pack, i, &s_item_img[i]);
+    }
+    s_items_ready = true;
+    printf("[+] Loaded Mainitem.gp: %d heirloom icons (64x64)\n",
+           s_item_pack.count);
+    return true;
+}
+
+// Space-separated list of the heirlooms granted to `officer`. Returns count.
+static int treasure_names_for_officer(const TreasureState *tr, int officer,
+                                      char *out, size_t out_sz) {
+    if (!out || out_sz == 0) return 0;
+    out[0] = 0;
+    int n = 0;
+    for (int i = 0; i < TREASURE_COUNT; i++) {
+        if (!tr || tr->owner_officer[i] != officer) continue;
+        if (n > 0) strncat(out, " ", out_sz - strlen(out) - 1);
+        strncat(out, treasure_name_sjis(i), out_sz - strlen(out) - 1);
+        n++;
+    }
+    return n;
+}
+
+// Deep-copy an already decoded image (used to show an item icon inside the
+// dialogue box without sharing ownership of the cached pixels).
+static void image_copy_into(ImageDecoded *dst, const ImageDecoded *src) {
+    if (!dst) return;
+    free_decoded_image(dst);
+    if (!src || !src->pixels) return;
+    dst->width = src->width;
+    dst->height = src->height;
+    size_t n = (size_t)src->width * (size_t)src->height;
+    dst->pixels = (uint8_t*)malloc(n);
+    if (dst->pixels) memcpy(dst->pixels, src->pixels, n);
+    if (src->mask) {
+        dst->mask = (uint8_t*)malloc(n);
+        if (dst->mask) memcpy(dst->mask, src->mask, n);
+    }
+    memcpy(dst->palette, src->palette, sizeof(dst->palette));
+}
+
+// Bresenham dashed line with optional vertical thickness, clipped to the
+// 640x400 logical framebuffer. dash <= 0 draws a solid line.
+static void draw_dashed_line(int x0, int y0, int x1, int y1,
+                             uint8_t color, int dash, int thickness) {
+    int dx = abs(x1 - x0);
+    int sx = (x0 < x1) ? 1 : -1;
+    int dy = -abs(y1 - y0);
+    int sy = (y0 < y1) ? 1 : -1;
+    int err = dx + dy;
+    int n = 0;
+    for (;;) {
+        if (dash <= 0 || ((n / dash) % 2) == 0) {
+            for (int t = 0; t < thickness; t++) {
+                int py = y0 + t;
+                if (x0 >= 0 && x0 < PC98_WIDTH && py >= 0 && py < PC98_HEIGHT) {
+                    hal_video_draw_pixel(x0, py, color);
+                }
+            }
+        }
+        if (x0 == x1 && y0 == y1) break;
+        int e2 = 2 * err;
+        if (e2 >= dy) { err += dy; x0 += sx; }
+        if (e2 <= dx) { err += dx; y0 += sy; }
+        n++;
+    }
+}
+
+// Draw the 39-castle road graph on the map panorama. `bright` draws solid
+// white lanes (--show-roads); otherwise the lanes are dashed gold. When
+// `highlight_from` is valid, lanes to the picker's `targets` are highlighted.
+static void draw_map_roads(const Scenario *sc, int camera_x, bool bright,
+                           int highlight_from, const int *targets,
+                           int ntargets) {
+    if (!sc) return;
+    uint8_t lane = bright ? 7 : 6;
+    int dash = bright ? 0 : 4;
+    int thick = bright ? 2 : 1;
+
+    for (int i = 0; i < sc->num_castles; i++) {
+        const ScenarioCastle *a = &sc->castles[i];
+        int ax = a->map_x - camera_x;
+        int ay = a->map_y + MAP_VIEW_Y_OFFSET;
+        for (int k = 0; k < a->num_conns; k++) {
+            int j = a->conns[k];
+            if (j <= i || j >= sc->num_castles) continue;
+            const ScenarioCastle *b = &sc->castles[j];
+            int bx = b->map_x - camera_x;
+            int by = b->map_y + MAP_VIEW_Y_OFFSET;
+            if ((ax < -8 && bx < -8) ||
+                (ax > PC98_WIDTH + 8 && bx > PC98_WIDTH + 8)) continue;
+            draw_dashed_line(ax, ay, bx, by, lane, dash, thick);
+        }
+        if (bright && ax >= 0 && ax < PC98_WIDTH) {
+            // Junction dot + tiny id for --show-roads verification.
+            hal_video_fill_rect(ax - 2, ay - 2, 5, 5, 7);
+            char idbuf[8];
+            snprintf(idbuf, sizeof(idbuf), "%d", i);
+            hal_video_draw_text_sjis(ax + 4, ay + 2, idbuf, 7);
+        }
+    }
+
+    if (highlight_from >= 0 && highlight_from < sc->num_castles && targets) {
+        const ScenarioCastle *a = &sc->castles[highlight_from];
+        int ax = a->map_x - camera_x;
+        int ay = a->map_y + MAP_VIEW_Y_OFFSET;
+        for (int t = 0; t < ntargets; t++) {
+            int j = targets[t];
+            if (j < 0 || j >= sc->num_castles) continue;
+            const ScenarioCastle *b = &sc->castles[j];
+            int bx = b->map_x - camera_x;
+            int by = b->map_y + MAP_VIEW_Y_OFFSET;
+            draw_dashed_line(ax, ay, bx, by, 7, 0, 2);
+            hal_video_draw_rect(bx - 14, by - 11, 28, 22, 7);
+        }
+    }
+}
+
+// 19-icon 家宝 panel. `sel` is the highlighted item, `msg` an optional status
+// line (grant feedback). Draws ownership borders and the selected item's
+// name / bonuses / holder.
+static void draw_treasure_panel(const TreasureState *tr, int sel,
+                                const char *msg) {
+    hal_video_fill_rect(TREASURE_PANEL_X, TREASURE_PANEL_Y,
+                        TREASURE_PANEL_W, TREASURE_PANEL_H, 1);
+    hal_video_draw_rect(TREASURE_PANEL_X, TREASURE_PANEL_Y,
+                        TREASURE_PANEL_W, TREASURE_PANEL_H, 6);
+    hal_video_draw_rect(TREASURE_PANEL_X + 2, TREASURE_PANEL_Y + 2,
+                        TREASURE_PANEL_W - 4, TREASURE_PANEL_H - 4, 7);
+
+    hal_video_draw_text_sjis(TREASURE_PANEL_X + 14, TREASURE_PANEL_Y + 5,
+                             "\x89\xc6\x95\xf3\x88\xea\x97\x97", 6); // 家宝一覧
+    hal_video_draw_text_sjis(TREASURE_PANEL_X + TREASURE_PANEL_W - 190,
+                             TREASURE_PANEL_Y + 5,
+                             "G:\x8e\xf6\x97\x5e  ESC:\x96\xdf\x82\xe9", 7);
+
+    for (int i = 0; i < TREASURE_COUNT; i++) {
+        int col = i % TREASURE_GRID_COLS;
+        int row = i / TREASURE_GRID_COLS;
+        int cx = TREASURE_GRID_X + col * TREASURE_CELL;
+        int cy = TREASURE_GRID_Y + row * TREASURE_CELL;
+
+        uint8_t border = 5; // unowned / unknown: dark grey
+        if (tr && tr->owner_faction[i] >= 0) {
+            const FactionDef *fd = scenario_get_faction(tr->owner_faction[i]);
+            border = fd ? fd->flag_color : 7;
+        }
+
+        hal_video_fill_rect(cx, cy, TREASURE_CELL - 4, TREASURE_CELL - 4, 0);
+        hal_video_draw_rect(cx, cy, TREASURE_CELL - 4, TREASURE_CELL - 4, border);
+        if (i == sel) {
+            hal_video_draw_rect(cx - 2, cy - 2, TREASURE_CELL, TREASURE_CELL, 7);
+            hal_video_draw_rect(cx - 3, cy - 3, TREASURE_CELL + 2, TREASURE_CELL + 2, 6);
+        }
+        if (s_items_ready && s_item_img[i].pixels) {
+            hal_video_blit_indexed(cx + 2, cy + 2, s_item_img[i].width,
+                                   s_item_img[i].height,
+                                   s_item_img[i].pixels, s_item_img[i].width);
+        }
+        char idx[8];
+        snprintf(idx, sizeof(idx), "%02d", i + 1);
+        hal_video_draw_text_sjis(cx + 3, cy + TREASURE_CELL - 16, idx, 7);
+    }
+
+    int iy = TREASURE_PANEL_Y + 298;
+    if (sel >= 0 && sel < TREASURE_COUNT) {
+        TreasureBonus b = treasure_bonus(sel);
+        hal_video_draw_text_sjis(TREASURE_PANEL_X + 14, iy,
+                                 treasure_name_sjis(sel), 6);
+        char bonus[128];
+        snprintf(bonus, sizeof(bonus),
+                 "\x93\x9d\x97\xa6+%d  \x95\x90\x97\xcd+%d  \x92\x6d\x96\x64+%d  \x90\xad\x8e\xa1+%d",
+                 b.lead, b.war, b.intel, b.politics);
+        hal_video_draw_text_sjis(TREASURE_PANEL_X + 14, iy + 18, bonus, 7);
+
+        if (msg && msg[0]) {
+            hal_video_draw_text_sjis(TREASURE_PANEL_X + 14, iy + 36, msg, 6);
+        } else {
+            char owner[160];
+            int f = tr ? tr->owner_faction[sel] : -1;
+            const FactionDef *fd = (f >= 0) ? scenario_get_faction(f) : NULL;
+            if (fd) {
+                snprintf(owner, sizeof(owner),
+                         "\x8f\x8a\x8e\x9d\x81\x46%s(%s)", fd->name_sjis, fd->flag_sjis);
+            } else {
+                snprintf(owner, sizeof(owner), "\x8f\x8a\x8e\x9d\x81\x46\x82\xc8\x82\xb5"); // 所持：なし
+            }
+            hal_video_draw_text_sjis(TREASURE_PANEL_X + 14, iy + 36, owner, 7);
+        }
+    }
+}
+
+
+
+// ---------------------------------------------------------------------------
 // 合戦 (Kassen) battle mode: assets, input and rendering
 // ---------------------------------------------------------------------------
 
@@ -456,6 +677,8 @@ static KassenState g_kassen;
 static bool        g_battle_mode = false;
 static int         g_battle_finished_frame = -1;
 static int         g_battle_frame = 0;   // frames elapsed since the battle began
+static TurnState   g_turn;               // shared turn/家宝 state (子任务 9)
+static int          g_treasure_popup = -1; // item id to announce after a siege
 static NpkFile     s_hke_pack;
 static NpkFile     s_hkumi_pack;
 static NpkFile     s_hikback_pack;
@@ -666,6 +889,13 @@ static bool battle_enter(Scenario *sc, int from, int to, int officer,
     if (from < 0 || from >= sc->num_castles ||
         to < 0 || to >= sc->num_castles) return false;
 
+    // 子任务 9: marches are confined to the road network.
+    if (!scenario_are_adjacent(sc, from, to)) {
+        fprintf(stderr, "[ERROR] battle: castles %d and %d are not adjacent\n",
+                from, to);
+        return false;
+    }
+
     if (!s_hke_pack.data)     npk_load(&s_hke_pack, s_asset_dir, "Hkeshiki.gp");
     if (!s_hkumi_pack.data)   npk_load(&s_hkumi_pack, s_asset_dir, "Hkumi.gp");
     if (!s_hikback_pack.data) npk_load(&s_hikback_pack, s_asset_dir, "Hikback.gp");
@@ -708,9 +938,32 @@ static bool battle_enter(Scenario *sc, int from, int to, int officer,
 static void battle_leave(Scenario *sc) {
     if (!g_battle_mode) return;
     int to = g_kassen.to_castle;
+    int from = g_kassen.from_castle;
     bool victory = g_kassen.victory;
     bool retreated = g_kassen.retreated;
+    bool player_defends = g_kassen.player_defends;
+    int defender_faction = (to >= 0 && to < sc->num_castles)
+                               ? sc->castles[to].faction_id : -1;
+    int victor_faction = (from >= 0 && from < sc->num_castles)
+                             ? sc->castles[from].faction_id : -1;
     kassen_apply_result(&g_kassen, sc);
+
+    // 子任务 9: a captured castle may yield the defender's heirloom.
+    if (victory && !player_defends && defender_faction >= 0 &&
+        defender_faction != victor_faction) {
+        uint32_t seed = (uint32_t)(to * 131 + g_turn.year * 7 +
+                                   g_turn.month * 13 + g_battle_frame);
+        int item = treasure_seize(&g_turn.treasures, defender_faction,
+                                  victor_faction, seed);
+        if (item >= 0) {
+            printf("[ITEM] seized item=%d faction %d -> %d (seed=%u)\n",
+                   item, defender_faction, victor_faction, seed);
+            if (victor_faction == g_turn.player_faction) {
+                g_treasure_popup = item;
+            }
+        }
+    }
+
     if (victory) {
         int ev = event_match_castle_fall(to);
         if (ev >= 0) {
@@ -1026,6 +1279,14 @@ int main(int argc, char *argv[]) {
     const char *save_slot = "Savedata.sav";    // F5/F9 slot path (--save-slot)
     bool        dump_state = false;            // --dump-state : print state hash
 
+    // 子任务 9: 39-castle road graph + 家宝 viewer.
+    bool show_roads = false;                   // --show-roads
+    int  item_show = -1;                       // --show-item <0..18>
+    int  grant_item = -1;                      // --grant-item <0..18>
+    bool show_treasure = false;                // in-game 家宝 panel (B)
+    int  treasure_sel = 0;
+    char treasure_msg[128] = {0};
+
     // Headless mouse-click injection: --click x,y[@frame], repeatable / ';'-list.
     ClickEvent clicks[MAX_CLICKS];
     int click_count = 0;
@@ -1211,6 +1472,16 @@ int main(int argc, char *argv[]) {
                 clicks[click_count].right = right;
                 click_count++;
             }
+        } else if (strcmp(argv[i], "--show-roads") == 0) {
+            show_roads = true;
+        } else if (strcmp(argv[i], "--show-item") == 0 && i + 1 < argc) {
+            item_show = atoi(argv[++i]);
+            if (item_show < 0) item_show = 0;
+            if (item_show >= TREASURE_COUNT) item_show = TREASURE_COUNT - 1;
+        } else if (strcmp(argv[i], "--grant-item") == 0 && i + 1 < argc) {
+            grant_item = atoi(argv[++i]);
+            if (grant_item < 0) grant_item = 0;
+            if (grant_item >= TREASURE_COUNT) grant_item = TREASURE_COUNT - 1;
         } else if (strcmp(argv[i], "--preview-npk") == 0 && i + 2 < argc) {
             preview_npk_name = argv[++i];
             preview_npk_index = atoi(argv[++i]);
@@ -1256,6 +1527,18 @@ int main(int argc, char *argv[]) {
         show_cmd_menu = false;
     }
 
+    // 子任务 9: road network overlay / heirloom viewer.
+    if (show_roads || item_show >= 0) {
+        start_map_mode = true;
+        show_castle_card = false;
+        show_cmd_menu = false;
+    }
+    if (grant_item >= 0) {
+        start_map_mode = true;
+        show_castle_card = false;
+        show_cmd_menu = false;
+    }
+
     // 子任务 8: the opening flow (Logo.gp title -> scenario -> daimyo -> map)
     // only runs for a plain launch. Every "jump" argument keeps the original
     // direct-to-map behaviour so all existing CLI regression paths are intact.
@@ -1264,6 +1547,7 @@ int main(int argc, char *argv[]) {
                     trigger_event >= 0 || attack_from >= 0 || defend_from >= 0 ||
                     preview_npk_name != NULL || gallery_mode || unified_debug ||
                     load_path != NULL || save_path != NULL || dump_state ||
+                    show_roads || item_show >= 0 || grant_item >= 0 ||
                     scenario_given || castle_given || officer_given ||
                     faction_override >= 0;
     bool opening_mode = !cli_jump;
@@ -1403,7 +1687,6 @@ int main(int argc, char *argv[]) {
         player_faction = g_scenario.castles[30].faction_id;  // 鎌倉 (源氏)
     }
     if (player_faction < 0) player_faction = 0;
-    TurnState g_turn;
     turn_init(&g_turn, &g_scenario, player_faction);
 
     // 子任务 8: --load restores a snapshot before any headless commands run.
@@ -1424,6 +1707,52 @@ int main(int argc, char *argv[]) {
     }
     printf("[+] Turn state: faction %d, %d/%d\n",
            g_turn.player_faction, g_turn.year, g_turn.month);
+
+    // 子任务 9: heirloom icons + strategic road diagnostics.
+    ensure_items_loaded();
+    if (show_roads) {
+        printf("[ROADS] castles=%d edges=%d\n", g_scenario.num_castles,
+               scenario_road_edge_count(&g_scenario));
+        for (int i = 0; i < g_scenario.num_castles; i++) {
+            const ScenarioCastle *c = &g_scenario.castles[i];
+            printf("[ROADS] %02d", i);
+            for (int k = 0; k < c->num_conns; k++) {
+                printf(" %02d", c->conns[k]);
+            }
+            printf("\n");
+        }
+    }
+    if (item_show >= 0) {
+        TreasureBonus b = treasure_bonus(item_show);
+        int owner = g_turn.treasures.owner_faction[item_show];
+        printf("[ITEM] id=%d owner=%d lead+%d war+%d intel+%d pol+%d\n",
+               item_show, owner, b.lead, b.war, b.intel, b.politics);
+        show_treasure = true;
+        treasure_sel = item_show;
+    }
+    if (grant_item >= 0) {
+        int target = scenario_faction_leader(&g_scenario, g_turn.player_faction);
+        if (target < 0 && cur_castle >= 0 && cur_castle < g_scenario.num_castles) {
+            target = g_scenario.castles[cur_castle].lord_officer_id;
+        }
+        bool ok = false;
+        if (target >= 0) {
+            ok = treasure_grant(&g_turn.treasures, &g_scenario, grant_item, target);
+        }
+        show_treasure = true;
+        treasure_sel = grant_item;
+        if (ok) {
+            TreasureBonus b = treasure_officer_bonus(&g_turn.treasures, target);
+            printf("[ITEM] grant item=%d officer=%d lead+%d war+%d intel+%d pol+%d\n",
+                   grant_item, target, b.lead, b.war, b.intel, b.politics);
+            snprintf(treasure_msg, sizeof(treasure_msg), "\x8e\xf6\x97\x5e\x81\x46%s",
+                     g_scenario.officers[target].full_name_sjis);
+        } else {
+            printf("[ITEM] grant failed item=%d target=%d owner=%d\n",
+                   grant_item, target, g_turn.treasures.owner_faction[grant_item]);
+            snprintf(treasure_msg, sizeof(treasure_msg), "\x8e\xb8\x94\x73");
+        }
+    }
 
     // --unified: force every castle into the player's faction and show the
     // 天下統一 ending CG (headless verification of the final condition).
@@ -1767,6 +2096,20 @@ int main(int argc, char *argv[]) {
                 int ev = g_queued_event;
                 g_queued_event = -1;
                 event_enter(ev, &g_messages);
+            } else if (g_treasure_popup >= 0) {
+                // 子任务 9: announce a heirloom seized from a captured castle.
+                int item = g_treasure_popup;
+                g_treasure_popup = -1;
+                if (item >= 0 && item < TREASURE_COUNT) {
+                    image_copy_into(&dlg_kao, &s_item_img[item]);
+                    show_dialog = true;
+                    dlg_custom = true;
+                    dlg_officer = 0;   // non-negative => render the icon
+                    snprintf(dlg_custom_text, sizeof(dlg_custom_text),
+                             "\x89\xc6\x95\xf3\x81\x46%s", // 家宝：
+                             treasure_name_sjis(item));
+                    printf("[ITEM] popup item=%d\n", item);
+                }
             } else if (pending_idx < ai_report.pending_count) {
                 AiPendingBattle pb = ai_report.pending[pending_idx++];
                 if (pb.from >= 0 && pb.from < g_scenario.num_castles &&
@@ -1827,6 +2170,8 @@ int main(int argc, char *argv[]) {
             // officer roster -> command menu -> castle card -> quit.
             if (gallery_mode) {
                 gallery_mode = false;
+            } else if (show_treasure) {
+                show_treasure = false;
             } else if (show_dialog) {
                 show_dialog = false;
             } else if (list_mode != 0) {
@@ -1851,7 +2196,9 @@ int main(int argc, char *argv[]) {
 
         // Right-click walks back one level, mirroring ESC but never quits.
         if (in.rbutton_pressed && !g_battle_mode && !g_ending_mode && !g_event_mode) {
-            if (show_dialog) {
+            if (show_treasure) {
+                show_treasure = false;
+            } else if (show_dialog) {
                 show_dialog = false;
             } else if (list_mode != 0) {
                 list_mode = 0;
@@ -1906,6 +2253,12 @@ int main(int argc, char *argv[]) {
             gallery_pack = 2;   // Mainitem.gp: 19 x 64x64 heirloom icons
             gallery_block = 0;
             gallery_loaded_pack = -1;
+        } else if (key == YPHZ_KEY_B && map_mode) {
+            // 子任务 9: 家宝 viewer / grant panel.
+            show_treasure = !show_treasure;
+            treasure_msg[0] = 0;
+            show_castle_card = false;
+            show_cmd_menu = false;
         }
 
         // Mode Toggle: M
@@ -1928,9 +2281,71 @@ int main(int argc, char *argv[]) {
             const bool player_castle =
                 (g_scenario.castles[cur_castle].faction_id == g_turn.player_faction);
             const bool modal_open = show_dialog || show_officer_list ||
+                                    show_treasure ||
                                     (show_cmd_menu && player_castle);
 
-            if (list_mode != 0) {
+            if (show_treasure) {
+                // ---- 家宝 panel: browse 19 heirlooms, G grants to the lord ----
+                int col = treasure_sel % TREASURE_GRID_COLS;
+                int row = treasure_sel / TREASURE_GRID_COLS;
+                if (key == YPHZ_KEY_LEFT) {
+                    col = (col + TREASURE_GRID_COLS - 1) % TREASURE_GRID_COLS;
+                } else if (key == YPHZ_KEY_RIGHT) {
+                    col = (col + 1) % TREASURE_GRID_COLS;
+                } else if (key == YPHZ_KEY_UP) {
+                    row = (row + 3) % 4;
+                } else if (key == YPHZ_KEY_DOWN) {
+                    row = (row + 1) % 4;
+                }
+                int next = row * TREASURE_GRID_COLS + col;
+                if (next >= TREASURE_COUNT) next = TREASURE_COUNT - 1;
+                if (next != treasure_sel) {
+                    treasure_sel = next;
+                    treasure_msg[0] = 0;
+                }
+
+                if (in.lbutton_pressed && in.mouse_inside) {
+                    int gx = (in.mouse_x - TREASURE_GRID_X) / TREASURE_CELL;
+                    int gy = (in.mouse_y - TREASURE_GRID_Y) / TREASURE_CELL;
+                    int idx = gy * TREASURE_GRID_COLS + gx;
+                    if (gx >= 0 && gx < TREASURE_GRID_COLS && gy >= 0 && gy < 4 &&
+                        idx >= 0 && idx < TREASURE_COUNT) {
+                        treasure_sel = idx;
+                        treasure_msg[0] = 0;
+                    }
+                }
+
+                if (key == YPHZ_KEY_G) {
+                    int lord = -1;
+                    bool player_here = false;
+                    if (cur_castle >= 0 && cur_castle < g_scenario.num_castles) {
+                        lord = g_scenario.castles[cur_castle].lord_officer_id;
+                        player_here = (g_scenario.castles[cur_castle].faction_id ==
+                                       g_turn.player_faction);
+                    }
+                    if (!player_here) {
+                        snprintf(treasure_msg, sizeof(treasure_msg),
+                                 "\x8e\xa9\x90\xa8\x97\xcd\x82\xcc\x8f\xe9\x82\xcc\x82\xdd"); // 自勢力の城のみ
+                    } else if (lord < 0) {
+                        snprintf(treasure_msg, sizeof(treasure_msg),
+                                 "\x8f\xe9\x8e\xe5\x95\x73\x8d\xdd"); // 城主不在
+                    } else if (!treasure_owned_by(&g_turn.treasures, treasure_sel,
+                                                  g_turn.player_faction)) {
+                        snprintf(treasure_msg, sizeof(treasure_msg),
+                                 "\x91\xbc\x89\xc6\x82\xcc\x89\xc6\x95\xf3"); // 他家の家宝
+                    } else if (treasure_grant(&g_turn.treasures, &g_scenario,
+                                              treasure_sel, lord)) {
+                        printf("[ITEM] grant item=%d officer=%d\n",
+                               treasure_sel, lord);
+                        snprintf(treasure_msg, sizeof(treasure_msg),
+                                 "\x8e\xf6\x97\x5e\x81\x46%s",
+                                 g_scenario.officers[lord].full_name_sjis); // 授与：
+                    } else {
+                        snprintf(treasure_msg, sizeof(treasure_msg),
+                                 "\x8e\xb8\x94\x73"); // 失敗
+                    }
+                }
+            } else if (list_mode != 0) {
                 // ---- Castle picker (移動 destinations / 出陣 targets) ----
                 int sel = -1;
                 if (key >= YPHZ_KEY_1 && key <= YPHZ_KEY_8) {
@@ -2046,15 +2461,26 @@ int main(int argc, char *argv[]) {
                                 }
                             } else {
                                 const ScenarioOfficer *o = &g_scenario.officers[oid];
+                                TreasureBonus eff =
+                                    treasure_officer_bonus(&g_turn.treasures, oid);
+                                char tre_line[192];
+                                if (treasure_names_for_officer(&g_turn.treasures, oid,
+                                                               tre_line,
+                                                               sizeof(tre_line)) <= 0) {
+                                    snprintf(tre_line, sizeof(tre_line), "\x82\xc8\x82\xb5"); // なし
+                                }
                                 dlg_custom = true;
                                 dlg_officer = oid;
                                 snprintf(dlg_custom_text, sizeof(dlg_custom_text),
                                          "%s\n"
-                                         "\x93\x9d\x97\xa6 %d   \x95\x90\x97\xcd %d   \x92\x6d\x96\x64 %d\n"
-                                         "\x90\xad\x8e\xa1 %d   \x92\x89\x90\xbd %d   \x95\xba\x97\xcd %d",
+                                         "\x93\x9d\x97\xa6 %d(+%d)  \x95\x90\x97\xcd %d(+%d)  \x92\x6d\x96\x64 %d(+%d)\n"
+                                         "\x90\xad\x8e\xa1 %d  \x92\x89\x90\xbd %d  \x95\xba\x97\xcd %d\n"
+                                         "\x89\xc6\x95\xf3 %s",
                                          o->full_name_sjis,
-                                         o->lead, o->war, o->intel,
-                                         o->politics, o->loyalty, o->troops);
+                                         o->lead, eff.lead, o->war, eff.war,
+                                         o->intel, eff.intel,
+                                         o->politics, o->loyalty, o->troops,
+                                         tre_line);
                                 decode_officer_portrait(oid, &g_scenario, kao_data, kao_size,
                                                         officer_offsets, &dlg_kao);
                                 show_dialog = true;
@@ -2328,6 +2754,11 @@ int main(int argc, char *argv[]) {
             // ===============================================================
             hal_video_blit_indexed(0, 20, PC98_WIDTH, 360, japan_map_pixels + camera_x, map_w);
 
+            // 子任务 9: draw the 39-castle road network beneath the flags.
+            draw_map_roads(&g_scenario, camera_x, show_roads,
+                           (list_mode != 0 ? cur_castle : -1),
+                           list_items, list_count);
+
             // Draw faction flags over all visible castles
             for (int i = 0; i < g_scenario.num_castles; i++) {
                 ScenarioCastle *cs = &g_scenario.castles[i];
@@ -2385,8 +2816,9 @@ int main(int argc, char *argv[]) {
                      sel->name_sjis, fac->name_sjis, fac->flag_sjis, lord_name, sel->troops, sel->rice, sel->num_conns);
             hal_video_draw_text_sjis(16, 382, bot_str, 7);
 
-            // Castle Detail Card Modal Overlay
-            if (show_castle_card) {
+            // Castle Detail Card Modal Overlay (hidden while the 移動/出陣
+            // picker is open so the highlighted road lanes stay visible).
+            if (show_castle_card && list_mode == 0) {
                 bool card_player = (sel->faction_id == g_turn.player_faction);
                 int cx = card_player ? 52 : 70;
                 int cy = 40;
@@ -2527,6 +2959,11 @@ int main(int argc, char *argv[]) {
                              g_scenario.castles[cs].troops);
                     hal_video_draw_text_sjis(LIST_X + 10, ry, line, hl ? 0 : 7);
                 }
+            }
+
+            // 子任务 9: 家宝 (heirloom) panel overlays everything on the map.
+            if (show_treasure) {
+                draw_treasure_panel(&g_turn.treasures, treasure_sel, treasure_msg);
             }
 
         } else {
@@ -2746,6 +3183,10 @@ int main(int argc, char *argv[]) {
     free_decoded_image(&s_battle_kao[0]);
     free_decoded_image(&s_battle_kao[1]);
     opening_free(&g_opening);
+    for (int i = 0; i < TREASURE_COUNT; i++) {
+        free_decoded_image(&s_item_img[i]);
+    }
+    npk_free(&s_item_pack);
     npk_free(&s_hke_pack);
     npk_free(&s_hkumi_pack);
     npk_free(&s_hikback_pack);

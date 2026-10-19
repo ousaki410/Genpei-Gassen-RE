@@ -53,6 +53,7 @@ void turn_init(TurnState *ts, const Scenario *sc, int faction_id) {
     ts->player_faction = faction_id;
     ts->year = sc ? sc->year : 1180;
     ts->month = sc ? sc->month : 9;
+    treasure_init(&ts->treasures, sc);
 }
 
 void turn_reset_actions(TurnState *ts) {

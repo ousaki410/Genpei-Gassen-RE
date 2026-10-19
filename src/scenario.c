@@ -244,3 +244,36 @@ bool scenario_load(const char *sndata_path, int scenario_idx, Scenario *out_sc) 
            scenario_idx + 1, out_sc->year, out_sc->num_castles, out_sc->num_officers);
     return true;
 }
+
+// ---------------------------------------------------------------------------
+// 子任务 9: road network helpers
+// ---------------------------------------------------------------------------
+
+bool scenario_are_adjacent(const Scenario *sc, int a, int b) {
+    if (!sc) return false;
+    if (a < 0 || a >= sc->num_castles) return false;
+    if (b < 0 || b >= sc->num_castles) return false;
+    if (a == b) return false;
+
+    const ScenarioCastle *ca = &sc->castles[a];
+    for (int i = 0; i < ca->num_conns; i++) {
+        if (ca->conns[i] == b) return true;
+    }
+    const ScenarioCastle *cb = &sc->castles[b];
+    for (int i = 0; i < cb->num_conns; i++) {
+        if (cb->conns[i] == a) return true;
+    }
+    return false;
+}
+
+int scenario_road_edge_count(const Scenario *sc) {
+    if (!sc) return 0;
+    int edges = 0;
+    for (int i = 0; i < sc->num_castles; i++) {
+        const ScenarioCastle *c = &sc->castles[i];
+        for (int k = 0; k < c->num_conns; k++) {
+            if (c->conns[k] > i) edges++;
+        }
+    }
+    return edges;
+}

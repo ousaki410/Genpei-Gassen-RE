@@ -5,6 +5,7 @@
 #include <stdbool.h>
 
 #include "scenario.h"
+#include "treasure.h"
 
 // ---------------------------------------------------------------------------
 // Turn / domestic-affairs state machine.
@@ -37,6 +38,7 @@ typedef struct {
     int     year;                   // mirrors Scenario::year
     int     month;                  // mirrors Scenario::month (1..12)
     uint8_t acted[MAX_OFFICERS];    // 1 = this officer has already acted this month
+    TreasureState treasures;        // 子任务 9: 家宝 ownership / grants
 } TurnState;
 
 typedef struct {

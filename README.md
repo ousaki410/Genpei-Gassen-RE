@@ -163,6 +163,9 @@ cmake --build build -j
 | `--load <path>` | — | — | 启动时读取原生存档槽（在无头命令之前恢复），随后可继续内政/出陣 |
 | `--save-slot <path>` | — | `Savedata.sav` | 游戏内 `F5`/`F9` 使用的存档槽路径 |
 | `--dump-state` | — | — | 退出时打印状态摘要与 FNV-1a 哈希（`[STATE] ... hash=0x...`），用于存档往返比对 |
+| `--show-roads` | — | — | 子任务 9：以地图模式启动并高亮绘制全部 39 城路网（实线白 + 城编号），同时打印 `[ROADS] castles=39 edges=72` 与每城邻接表 |
+| `--show-item <n>` | — | — | 子任务 9：打开家宝面板并选中第 n 件家宝（0..18），打印其归属与加成 `[ITEM] id=.. owner=.. lead+.. war+.. intel+.. pol+..` |
+| `--grant-item <n>` | — | — | 子任务 9：把第 n 件家宝赏赐给玩家势力的当主（校验归属），打印 `[ITEM] grant item=.. officer=..` 或 `grant failed` |
 | `--shot-frame <n>` | — | `2` | 指定 `--screenshot` 在第 n 帧抓图（便于截取合战过程/胜利结算/夺城后的地图/事件 CG） |
 | `--unified` | — | — | 调试用：把 39 城全部划归玩家势力并立即播放「天下統一」结局 CG（用于无头验证） |
 | `--end-turn <n>` | — | `0` | 无头连续推进 n 个月（跨年进位），并弹出最后一月的收入结算框 |
@@ -263,6 +266,26 @@ SDL_VIDEODRIVER=dummy ./bin/yphz_engine --click '320,200@1' --frames 3 \
     --shot-frame 2 --screenshot /tmp/scenario.bmp
 SDL_VIDEODRIVER=dummy ./bin/yphz_engine --click '320,200@1;250,110@2' \
     --frames 4 --shot-frame 3 --screenshot /tmp/daimyo.bmp
+
+# 子任务 9：39 城战略路网（--show-roads 实线高亮 + 城编号 + 邻接表）
+SDL_VIDEODRIVER=dummy ./bin/yphz_engine --show-roads --frames 2 --shot-frame 1 --screenshot /tmp/roads.bmp
+# 移動选城模式：高亮当前城可达的邻接城池路线（先点 移動，再点名册行）
+SDL_VIDEODRIVER=dummy ./bin/yphz_engine --map -c 31 --faction 0 \
+    --click '560,153@1;100,100@2' --frames 6 --shot-frame 5 --screenshot /tmp/roads_move.bmp
+# 出陣选城模式同理（点 出陣 而非 移動）
+SDL_VIDEODRIVER=dummy ./bin/yphz_engine --map -c 30 --faction 0 \
+    --click '560,179@1;100,100@2' --frames 6 --shot-frame 5 --screenshot /tmp/roads_attack.bmp
+
+# 子任务 9：家宝系统（19 × 64×64 Mainitem.gp 图标）
+SDL_VIDEODRIVER=dummy ./bin/yphz_engine --show-item 0 --frames 2 --shot-frame 1 --screenshot /tmp/item0.bmp
+SDL_VIDEODRIVER=dummy ./bin/yphz_engine --grant-item 0 --frames 2 --shot-frame 1 --screenshot /tmp/grant.bmp
+# 攻陷敌城有 85% 概率缴获守方家宝并弹窗展示图标
+SDL_VIDEODRIVER=dummy ./bin/yphz_engine --attack 30,29 \
+    --battle-plan charge,charge,charge,charge,charge,charge \
+    --frames 12 --shot-frame 9 --screenshot /tmp/seize.bmp
+
+# 一键无头回归（32 项）
+tools/run_regression.sh
 ```
 
 ### 键盘操作
@@ -277,7 +300,11 @@ SDL_VIDEODRIVER=dummy ./bin/yphz_engine --click '320,200@1;250,110@2' \
 | 通用 | `F9` | 从存档槽读取并恢复游戏状态 |
 | 通用 | `L` | 打开/关闭 NPK016 画廊（Logo / 事件 CG / 家宝 / 合战景等 8 个包） |
 | 通用 | `I` | 直接打开家宝图标画廊（`Mainitem.gp`，19 × 64×64） |
-| 通用 | `ESC` | 依次返回：结局画面 → 画廊 → 移动/出陣目标列表 → 结算对话框 → 武将一览 → 指令菜单 → 城池情报卡 → 退出 |
+| 地图 | `B` | 开/关**家宝面板**（19 件 64×64 图标 + 归属边框 + 名称/加成/持有势力） |
+| 地图·家宝面板 | `←`/`→`/`↑`/`↓` / 左键 | 移动选择光标（5×4 网格） |
+| 地图·家宝面板 | `G` | 把选中的己方家宝**赏赐**给当前城池城主（需己方城池且城主在位） |
+| 地图·家宝面板 | `B` / `ESC` / 右键 | 关闭面板 |
+| 通用 | `ESC` | 依次返回：结局画面 → 画廊 → 家宝面板 → 移动/出陣目标列表 → 结算对话框 → 武将一览 → 指令菜单 → 城池情报卡 → 退出 |
 | 地图 | `1`–`7` | **指令菜单打开时**：开发 / 征兵 / 征税 / 移動 / 出陣 / 武将 / 终了 |
 | 地图 | `1`–`4` | **指令菜单关闭时**：切换剧本 |
 | 地图 | `ESC` / 右键 | 指令菜单 → 城池情报卡 → 退出；移動/出陣目标列表打开时先关闭列表 |
@@ -502,7 +529,7 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
 
 ### 一、源码文件职责与已实现功能
 
-**`src/main.c`（2769 行）— 入口与渲染主循环**
+**`src/main.c`（3211 行）— 入口与渲染主循环**
 - CLI 参数解析（见上表）+ `YPHZ_DATA_DIR` 环境变量。
 - 资源装载 `load_file()`：`Mainpal.pld`、`JIS.FNT`/`FONT.CHR`、`Main.exe`（读
   `0x4D3BB` 处 90 个立绘偏移表）、`Kaodata.gp`、`Hikback.gp`、`Maincmd2.gp`、
@@ -596,10 +623,11 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
 - `event_match_castle_fall()`：落城事件 —— 平泉（38）陷落、屋島（6）陷落。
 - 事件触发后主循环叠加 `Mainevt.gp` CG + `Message.gp` 台词（按关键词检索）。
 
-**`src/save.c`（130 行）+ `include/save.h` — 原生存档槽（子任务 8）**
+**`src/save.c`（163 行）+ `include/save.h` — 原生存档槽（子任务 8）**
 - 格式：`magic "YPHZSNAP"` + `version` + 剧本号/年月/城池数/武将数 + 39 ×
-  `ScenarioCastle` + 401 × `ScenarioOfficer` + `TurnState`（势力/年月/401 行动位）。
-  单槽 63270 字节，`#pragma pack(1)`，小端，自描述。
+  `ScenarioCastle` + 401 × `ScenarioOfficer` + `TurnState`（势力/年月/401 行动位）+
+  `TreasureState`（19 家宝归属）。单槽 63422 字节（v2），`#pragma pack(1)`，小端，
+  自描述；v1（63270 B）旧槽仍可读取。
 - `save_game()` / `load_game()`：只覆盖可变状态，`title_sjis` 与静态势力/坐标表仍来自
   `Sndata.gp`；校验 magic/版本/数量，截断或损坏的文件安全拒绝。
 - `save_state_hash()`：对规范快照做 FNV-1a 32-bit 摘要，`--dump-state` 用它做往返比对。
@@ -618,6 +646,19 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
   当主姓名与 `Kaodata` 立绘；当主由 `scenario_faction_leader()`（势力最强城主）确定。
   `↑↓`/数字移动、`ENTER`/点击确认 → `turn_init()` 并交回主循环进入地图。
 - `--click` 可完整驱动三屏（无头截图验证）；任何“跳转类” CLI 参数都会跳过片头。
+
+**`tools/run_regression.sh` — 32 项无头回归**
+
+一条命令跑完全部子任务的 CLI 断言（片头点击流、内政/合战/守城/退却、AI 一个月、
+历史事件、天下統一、画廊/NPK 预览、存档往返哈希一致、路网 `edges=72` 与对称连通
+校验、家宝赏赐/缴获）。任一项失败即非零退出，输出 `FAIL` 及末几行日志。
+
+**`src/treasure.c`（175 行）+ `include/treasure.h` — 家宝系统（子任务 9）**
+- `TreasureState`：`owner_faction[19]` + `owner_officer[19]`（-1 表示势力库房未赏赐）。
+- 19 件家宝的 SJIS 名称与加成表；`treasure_init()` 按势力轮转 + 强藩优先分配归属；
+  `treasure_grant()` 校验归属后记名到武将；`treasure_officer_bonus()` 汇总有效加成；
+  `treasure_seize()` 以确定性种子（城/年月/帧）按 85% 概率把手牌转给胜方。
+- 图标来自 `Mainitem.gp`（NPK016，19 块 64×64），由 `main.c` 一次性解码缓存。
 
 **`src/npk.c`（64 行）— NPK016 通用容器访问**
 - `npk_load()` 扫描文件中全部 `NPK016` magic 并记录块偏移；`npk_decode()` 按块
@@ -678,6 +719,7 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
 `TurnResult`）、`kassen.h`（`KassenState`/`KassenCommand`）、`ai.h`（`AiReport`/
 `AiPendingBattle`）、`event.h`（`HistoricalEvent`）、`save.h`（`save_game`/
 `load_game`）、`opening.h`（`OpeningState`）、`npk.h`（`NpkFile`）、
+`treasure.h`（`TreasureState`/`TreasureBonus`）、
 `sdl_compat.h`（SDL2/SDL3 引入切换）。
 所有结构体 `#pragma pack(push,1)`。
 
@@ -703,6 +745,9 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
 - 调色板：PLD（`Mainpal`/`Losepal`）解码与渲染。
 - 字体渲染：`JIS.FNT` + `FONT.CHR`，16x16 汉字 + 8x16 半角，SJIS 混排。
 - 剧本加载：`Sndata.gp` → 401 武将 / 39 城 / 势力 / 连接图。
+- 战略路网：39 城邻接图（`Sndata.gp` 偏移 16 的 7 槽，72 条对称边、全连通），
+  出阵/移动/AI 目标受路网约束，地图古道渲染 + 选城高亮。
+- 家宝系统：`Mainitem.gp` 19 × 64×64 图标，名称/加成/归属/赏赐/缴获 + `B` 面板。
 - 全景地图：`Mainmap.gp` 20 块拼接为 1696x360 并滚动渲染 + 旗标/准星/状态条。
 - 武将立绘：90 专属立绘 + 通用立绘展示与属性面板。
 - 城池情报卡、BMP 截图、CMake 构建（内置 SDL2）。
@@ -717,8 +762,8 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
   `kassen_auto_resolve()` 自动结算（`〇〇軍が××城を攻略！`），AI 进攻玩家则切入
   **守城战**（玩家守方，突撃/斉射/一騎討/籠城）。
 - 历史事件（子任务 7）：按年月或落城触发 `Mainevt.gp` CG + `Message.gp` 台词叠加层。
-- 存档/读档（子任务 8）：`F5`/`F9` 与 `--save`/`--load` 使用 63270 B 原生快照
-  （`Scenario` + `TurnState`），`--dump-state` 哈希验证往返完全一致。
+- 存档/读档（子任务 8）：`F5`/`F9` 与 `--save`/`--load` 使用 63422 B 原生快照
+  （`Scenario` + `TurnState` + 家宝表），`--dump-state` 哈希验证往返完全一致。
 - 片头流程（子任务 8）：`Logo.gp` 标题 → 4 剧本选择 → 15 势力大名选择（旗色 +
   当主立绘）→ 地图；无跳转类 CLI 参数时自动进入。
 
@@ -735,10 +780,10 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
 | **片头/选势力** | ✅ `Logo.gp` 标题 → 4 剧本选择 → 15 势力大名选择（旗色 + 当主 `Kaodata` 立绘）→ 地图；无跳转类 CLI 参数时自动进入，所有既有 CLI 路径保持不变 |
 | **音频** | **完全未实现**：`Music.gp`/`Opmusic.gp`/`Edmusic.gp` 未解析，FM 驱动 `Fmdrv.com` 未逆向，无 MIDI/音效 |
 | **游戏内文本** | ✅ C 引擎已加载 `Message.gp`（LS11，5 条 / 2350 句）并在底部弹框显示；`Mainevt.gp` 事件脚本逻辑仍未逆向 |
-| **未解析的数据文件** | `Maincmd.gp`、`Mainobj.gp`、`Kisetsu.gp`、`Montage.gp`、`Opendat.gp`、`Enddat.gp`、`Disk-*.gp` 等裸格式未解压；`Mainitem.gp` 已可画廊预览但未接入数值系统 |
+| **未解析的数据文件** | `Maincmd.gp`、`Mainobj.gp`、`Kisetsu.gp`、`Montage.gp`、`Opendat.gp`、`Enddat.gp`、`Disk-*.gp` 等裸格式未解压；`Mainitem.gp` 已接入 19 件家宝系统（名称/加成/赏赐/缴获） |
 | **未逆向的程序** | `Main.exe`/`Genpei.com`/`Open.exe`/`End.exe` 的主循环、菜单、合战逻辑 |
 
-### 四、2200G 上的子任务（1–8 已完成）
+### 四、2200G 上的子任务（1–9 已完成）
 
 > 说明：当前全部渲染为软件 blit（640x400），2200G（Ryzen 3 2200G + Vega 8）完全
 > 够用；以下均不涉及重 GPU/着色器开发，先打通**逻辑层**。
@@ -884,7 +929,8 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
     字段偏移并非简单平移，原版槽**无法**直接喂给现有 `Sndata` 解析器。
 - **原生快照**（`include/save.h` / `src/save.c`）：`magic "YPHZSNAP"` + 版本 +
   剧本号/年月/数量 + 39 × `ScenarioCastle` + 401 × `ScenarioOfficer` + `TurnState`，
-  单槽 **63270 B**、`#pragma pack(1)`、小端自描述；读取时只覆盖可变状态，静态表仍来自
+  单槽 **63422 B**（v2；子任务 9 追加了 152 B 家宝归属表，v1 的 63270 B 槽仍可读）、
+  `#pragma pack(1)`、小端自描述；读取时只覆盖可变状态，静态表仍来自
   `Sndata.gp`，并校验 magic/版本/数量。
 - **游戏内**：`F5` 保存 / `F9` 读取（默认槽 `Savedata.sav`，可用 `--save-slot <path>`），
   底部对话框显示「保存/復元 完了/失敗」，成功后同步指令菜单与窗口标题。
@@ -892,11 +938,11 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
   `--dump-state`（打印 `[STATE] ... hash=0x...`）。
 - 验收（`SDL_VIDEODRIVER=dummy`，零警告）：
   - `--do-cmd develop --end-turn 1 --save /tmp/a.sav --dump-state --frames 2`
-    → `[SAVE] wrote … hash=0xa130fe14`；重启 `--load /tmp/a.sav --dump-state`
-    → **同一哈希 0xa130fe14**（内政 + 换月往返 100% 一致）；
+    → `[SAVE] wrote … hash=0x66acba6e`；重启 `--load /tmp/a.sav --dump-state`
+    → **同一哈希 0x66acba6e**（内政 + 换月往返 100% 一致）；
   - `--attack 30,29 --battle-plan volley,charge,charge --frames 9 --save /tmp/b.sav
-    --dump-state` → `hash=0x93fe69c4`；`--load /tmp/b.sav --dump-state` → 同哈希
-    （夺城结果一并持久化）；
+    --dump-state` → `hash=0x9b9dc3bc`（含缴获的平家納経）；`--load /tmp/b.sav
+    --dump-state` → 同哈希（夺城结果一并持久化）；
   - 损坏/缺失存档被安全拒绝（截断、magic 不符、无法打开均打印 `[ERROR]` 后继续）。
 
 **子任务 8（第二部分）— 片头标题 / 剧本选择 / 大名选择**
@@ -931,5 +977,36 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
     `--gallery`、`--preview-npk`、`--test-msg`、`--scenario`、`--save`/`--load`、
     鼠标指令链路）均**跳过片头**并保持原输出。
 
+**子任务 9 — 39 城战略路网 + `Mainitem.gp` 家宝系统 — ✅ 已完成**
+- **路网数据来源（无需臆造）**：`Sndata.gp` 的 39 × 76 B 城池记录在偏移 **16** 处
+  就带有 8 个 `u16 LE` 邻接槽：槽 0 为保留标志，槽 1–7 为邻城 id（`0xFFFF` 空）。
+  解析后得到 **72 条无向边**、度数 1–7、**全图连通且完全对称**（无自环/重复）。
+  `scenario.c` 新增 `scenario_are_adjacent()` / `scenario_road_edge_count()`；
+  所有出阵/移动/AI 目标原本就走 `conns[]`，现在再由 `battle_enter()` 统一校验，
+  非邻接的 `--attack 30,0` 会直接拒绝：`[ERROR] battle: castles 30 and 0 are not adjacent`。
+- **路网渲染**：`draw_map_roads()` 以 Bresenham 虚线把 72 条古道画在地图全景上
+  （常态金色虚线；`--show-roads` 为白色实线 + 城编号 + 节点方块）；进入 **移動 /
+  出陣** 选城模式时，当前城到列表内所有可达城的路线以白色实线高亮并加方框，
+  同时隐藏情报卡以免遮挡。
+- **家宝系统**（`include/treasure.h` / `src/treasure.c`，`Mainitem.gp` 19 × 64×64）：
+  - 19 件家宝均有 SJIS 名称与四项加成（統率/武力/知略/政治，+3…+10）：
+    八咫鏡、八尺瓊勾玉、草薙剣、平家琵琶、源氏太刀、河内弓、菊一文字、小烏丸、
+    蜻蛉切、村正、三日月宗近、小竜景光、一期一振、骨喰藤四郎、平家納経、
+    厳島絵巻、源平合戦図屏風、菊水の盃、名馬磨墨。
+  - 初始归属：19 件按 15 势力轮转分配，余下 4 件给城池最多的 4 家；归属与
+    “已赏赐给某武将”分层记录（`owner_faction[19]` + `owner_officer[19]`）。
+  - **查看/赏赐**：地图 `B` 打开 5×4 家宝面板（归属势力旗色边框、选中项名称/
+    加成/持有势力）；`G` 把己方家宝赏赐给当前城城主，武将名册详情同步显示
+    “家宝 …”与 `統率 65(+8)` 形式的**有效能力**。
+  - **缴获**：玩家攻陷敌城时按确定性种子以 85% 概率夺取守方一件家宝，并在
+    结算后用对话框展示 64×64 图标（“家宝：平家納経”）。
+- **存档**：`TurnState` 内嵌 `TreasureState`，原生槽升级为 **v2 / 63422 B**；
+  仍兼容读取 v1 的 63270 B 槽（家宝表按当前剧本重新初始化）。
+- **CLI**：`--show-roads`（打印 39 城邻接表 + 高亮路网）、`--show-item <0..18>`
+  （面板定位 + `[ITEM] id/owner/加成`）、`--grant-item <0..18>`（无头赏赐校验）。
+- **回归**：新增 `tools/run_regression.sh`，一条命令跑完 **32 项**无头检查
+  （片头/内政/合战/AI/事件/存档往返/路网对称连通/家宝赏赐/缴获），全部 PASS；
+  `-Wall -Wextra` 零警告。
+
 补充（非本期）：**音频**（先逆向 `Fmdrv.com` + `Music.gp` 的 FM 音源格式）、
-**原版 `Savedata.gp` 字节写入**与**战略行军路线**（跨城出兵）仍属后续方向。
+**原版 `Savedata.gp` 字节读写**与**合战裸图精灵**（`Hunitpat`/`Hchikei`）仍属后续方向。

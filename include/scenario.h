@@ -99,4 +99,19 @@ int scenario_get_month(int scenario_idx);
 // officer id, or -1 when the faction holds no castles/officers.
 int scenario_faction_leader(const Scenario *sc, int faction_id);
 
+// ---------------------------------------------------------------------------
+// 子任务 9: strategic road network.
+//
+// Sndata.gp already stores the 39-castle adjacency table inside each 76-byte
+// castle record: eight little-endian u16 slots at offset 16, where slot 0 is a
+// reserved flag and slots 1..7 hold neighbouring castle ids (0xFFFF = empty).
+// The graph is symmetric, has 72 undirected edges and is fully connected.
+// ---------------------------------------------------------------------------
+
+// True when `a` and `b` are directly joined by a road/sea lane.
+bool scenario_are_adjacent(const Scenario *sc, int a, int b);
+
+// Number of undirected edges in the road network.
+int scenario_road_edge_count(const Scenario *sc);
+
 #endif // YPHZ_SCENARIO_H
