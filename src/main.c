@@ -20,6 +20,8 @@
 #include "dos_save.h"
 #include "raw_sprite.h"
 #include "encoding.h"
+#include "hud.h"
+#include "movie.h"
 
 static char s_asset_dir[256] = "games/yphz";
 
@@ -689,6 +691,9 @@ static bool        g_battle_mode = false;
 static int         g_battle_finished_frame = -1;
 static int         g_battle_frame = 0;   // frames elapsed since the battle began
 static TurnState   g_turn;               // shared turn/家宝 state (子任务 9)
+// 子任务 14/15: continuous opening/ending/testbench animation.
+static MovieState  g_movie;
+static int         g_last_movie_bank = -1;
 static int          g_treasure_popup = -1; // item id to announce after a siege
 static NpkFile     s_hke_pack;
 static NpkFile     s_hkumi_pack;
@@ -1510,6 +1515,277 @@ static void dump_chikei(void) {
     free(data);
 }
 
+
+// ---------------------------------------------------------------------------
+// 子任务 14: headless + interactive testbench actions.
+// The context bundles the few locals of main() the actions need, so the same
+// code path is used by --testbench-action and by the F2 overlay.
+// ---------------------------------------------------------------------------
+
+typedef struct {
+    Scenario       *sc;
+    TurnState      *ts;
+    const char     *snd_path;
+    const char     *data_dir;
+    MessageFile    *msgs;
+    const uint8_t  *kao_data;
+    size_t          kao_size;
+    const uint32_t *officer_offsets;
+    MovieState     *movie;
+    int            *cur_castle;
+    int            *cur_officer;
+    int            *cur_scenario;
+    int            *player_faction;
+    bool           *show_dialog;
+    bool           *dlg_custom;
+    int            *dlg_officer;
+    char           *dlg_text;
+    size_t          dlg_size;
+    ImageDecoded   *dlg_kao;
+    ImageDecoded   *cur_kao;
+} TestbenchCtx;
+
+static int tb_first_castle(const Scenario *sc, int faction) {
+    if (!sc) return 0;
+    for (int i = 0; i < sc->num_castles; i++) {
+        if (sc->castles[i].faction_id == faction) return i;
+    }
+    return 0;
+}
+
+static int tb_adjacent_enemy(const Scenario *sc, int castle, int faction) {
+    if (!sc || castle < 0 || castle >= sc->num_castles) return -1;
+    for (int k = 0; k < sc->castles[castle].num_conns; k++) {
+        int cc = sc->castles[castle].conns[k];
+        if (cc >= 0 && cc < sc->num_castles &&
+            sc->castles[cc].faction_id != faction) {
+            return cc;
+        }
+    }
+    return -1;
+}
+
+static TurnCommand tb_command_for_action(int action) {
+    switch (action) {
+        case HUD_TB_DEVELOP:        return TURN_CMD_DEVELOP;
+        case HUD_TB_RECRUIT:        return TURN_CMD_RECRUIT;
+        case HUD_TB_TAX:            return TURN_CMD_TAX;
+        case HUD_TB_DIPLOMACY:      return TURN_CMD_DIPLOMACY;
+        case HUD_TB_ESPIONAGE:      return TURN_CMD_ENTICE;
+        case HUD_TB_RECRUIT_OFFICER:return TURN_CMD_RECRUIT_OFFICER;
+        default:                    return TURN_CMD_NONE;
+    }
+}
+
+static void tb_run_battle(TestbenchCtx *c, int action) {
+    Scenario *sc = c->sc;
+    TurnState *ts = c->ts;
+    int castle = *c->cur_castle;
+    if (castle < 0 || castle >= sc->num_castles) castle = 0;
+
+    int from = castle;
+    int to = -1;
+    bool defense = (action == HUD_TB_DEFEND);
+
+    if (defense) {
+        int enemy = tb_adjacent_enemy(sc, castle, ts->player_faction);
+        if (enemy < 0) {
+            // Deterministic fallback for the standard map: 伊豆 -> 鎌倉.
+            from = 29;
+            to = 30;
+        } else {
+            from = enemy;
+            to = castle;
+        }
+    } else {
+        int targets[MAX_CASTLE_CONNS];
+        int n = kassen_list_targets(sc, castle, ts->player_faction,
+                                    targets, MAX_CASTLE_CONNS);
+        to = (n > 0) ? targets[0] : -1;
+        if (to < 0) {
+            if (castle == 30) to = 29;
+            else if (castle == 29) to = 30;
+            else to = -1;
+        }
+        if (to < 0) {
+            printf("[TESTBENCH] ATTACK castle=%d no_adjacent_enemy\n", castle);
+            return;
+        }
+    }
+
+    int officer = turn_find_attack_officer(sc, ts, from);
+    if (officer < 0) officer = sc->castles[from].lord_officer_id;
+
+    if (action == HUD_TB_AUTO_RESOLVE) {
+        KassenState ks;
+        memset(&ks, 0, sizeof(ks));
+        bool win = kassen_auto_resolve(sc, from, to, officer, &ks);
+        printf("[TESTBENCH] AUTO from=%d to=%d officer=%d victory=%d "
+               "new_faction=%d\n", from, to, officer, win ? 1 : 0,
+               sc->castles[to].faction_id);
+        *c->cur_castle = to;
+        return;
+    }
+
+    if (!battle_enter(sc, from, to, officer, c->kao_data, c->kao_size,
+                      c->officer_offsets, defense)) {
+        printf("[TESTBENCH] BATTLE failed from=%d to=%d\n", from, to);
+        return;
+    }
+    if (officer >= 0) ts->acted[officer] = 1;
+    *c->cur_castle = to;
+
+    if (action == HUD_TB_DUEL || action == HUD_TB_GRAPPLE) {
+        g_kassen.duel_active = true;
+        g_kassen.duel_bg = (action == HUD_TB_DUEL) ? 1 : 0;
+        g_kassen.duel_winner = 0;
+        printf("[TESTBENCH] %s bg=%s\n",
+               action == HUD_TB_DUEL ? "DUEL" : "GRAPPLE",
+               action == HUD_TB_DUEL ? "Hikback" : "Hkumi");
+    } else {
+        printf("[TESTBENCH] %s from=%d to=%d officer=%d\n",
+               defense ? "DEFEND" : "ATTACK", from, to, officer);
+    }
+}
+
+static void run_testbench_action(TestbenchCtx *c, int action) {
+    if (!c || !c->sc || !c->ts) return;
+    Scenario *sc = c->sc;
+    TurnState *ts = c->ts;
+    int castle = *c->cur_castle;
+
+    if (action >= HUD_TB_EVENT_BASE && action < HUD_TB_EVENT_BASE + 100) {
+        int idx = action - HUD_TB_EVENT_BASE;
+        if (idx >= 0 && idx < event_count()) {
+            event_enter(idx, c->msgs);
+            printf("[TESTBENCH] EVENT index=%d\n", idx);
+        }
+        return;
+    }
+    if (action >= HUD_TB_SCENARIO_BASE && action < HUD_TB_SCENARIO_BASE + 100) {
+        int idx = action - HUD_TB_SCENARIO_BASE;
+        if (idx < 0 || idx >= MAX_SCENARIOS) return;
+        if (scenario_load(c->snd_path, idx, sc)) {
+            *c->cur_scenario = idx;
+            int f = ts->player_faction;
+            if (scenario_faction_leader(sc, f) < 0) f = 0;
+            turn_init(ts, sc, f);
+            *c->player_faction = f;
+            if (*c->cur_officer < 0 || *c->cur_officer >= sc->num_officers) {
+                *c->cur_officer = scenario_faction_leader(sc, f);
+                if (*c->cur_officer < 0) *c->cur_officer = 0;
+            }
+            *c->cur_castle = tb_first_castle(sc, f);
+            refresh_officer_portrait(*c->cur_officer, sc, c->kao_data,
+                                     c->kao_size, c->officer_offsets,
+                                     c->cur_kao);
+            printf("[TESTBENCH] SCENARIO %d castles=%d faction=%d castle=%d\n",
+                   idx + 1, sc->num_castles, f, *c->cur_castle);
+        }
+        return;
+    }
+    if (action >= HUD_TB_FACTION_BASE && action < HUD_TB_FACTION_BASE + 100) {
+        int f = action - HUD_TB_FACTION_BASE;
+        if (f < 0 || f >= MAX_FACTIONS) return;
+        ts->player_faction = f;
+        *c->player_faction = f;
+        *c->cur_castle = tb_first_castle(sc, f);
+        int leader = scenario_faction_leader(sc, f);
+        if (leader >= 0) *c->cur_officer = leader;
+        if (*c->cur_officer < 0 || *c->cur_officer >= sc->num_officers) {
+            *c->cur_officer = 0;
+        }
+        refresh_officer_portrait(*c->cur_officer, sc, c->kao_data,
+                                 c->kao_size, c->officer_offsets, c->cur_kao);
+        printf("[TESTBENCH] FACTION %d castle=%d officer=%d\n",
+               f, *c->cur_castle, *c->cur_officer);
+        return;
+    }
+
+    switch (action) {
+        case HUD_TB_MAX_RESOURCES:
+            turn_cheat_max(ts, sc, castle);
+            printf("[TESTBENCH] MAX castle=%d gold=%d rice=%d troops=%d "
+                   "morale=%d defense=%d\n", castle,
+                   sc->castles[castle].gold, sc->castles[castle].rice,
+                   sc->castles[castle].troops, sc->castles[castle].morale,
+                   sc->castles[castle].defense);
+            return;
+        case HUD_TB_RESET_ACTIONS:
+            turn_cheat_reset_actions(ts);
+            printf("[TESTBENCH] RESET actions=0\n");
+            return;
+        case HUD_TB_MOVIE_OPEN:
+        case HUD_TB_MOVIE_END: {
+            int kind = (action == HUD_TB_MOVIE_OPEN) ? MOVIE_KIND_OPEN
+                                                    : MOVIE_KIND_END;
+            if (movie_start(c->movie, kind, true, c->data_dir)) {
+                g_last_movie_bank = -1;
+                printf("[TESTBENCH] MOVIE file=%s\n",
+                       movie_pack_name(kind));
+            }
+            return;
+        }
+        case HUD_TB_ATTACK:
+        case HUD_TB_DEFEND:
+        case HUD_TB_DUEL:
+        case HUD_TB_GRAPPLE:
+        case HUD_TB_AUTO_RESOLVE:
+            tb_run_battle(c, action);
+            return;
+        default:
+            break;
+    }
+
+    TurnCommand cmd = tb_command_for_action(action);
+    if (cmd == TURN_CMD_NONE) return;
+    TurnResult r;
+    memset(&r, 0, sizeof(r));
+    turn_run_command(ts, sc, castle, cmd, &r);
+    printf("[TESTBENCH] CMD %s castle=%d officer=%d ok=%d "
+           "gold=%+d rice=%+d troops=%+d morale=%+d\n",
+           turn_command_ascii(cmd), castle, r.officer_id, r.ok ? 1 : 0,
+           r.d_gold, r.d_rice, r.d_troops, r.d_morale);
+    if (r.ok && c->show_dialog) {
+        show_turn_result(&r, c->show_dialog, c->dlg_custom, c->dlg_officer,
+                         c->dlg_text, c->dlg_size, c->dlg_kao, sc,
+                         c->kao_data, c->kao_size, c->officer_offsets);
+    }
+}
+
+static int tb_parse_action(const char *name) {
+    if (!name) return HUD_TB_NONE;
+    static const struct { const char *n; int a; } map[] = {
+        {"develop", HUD_TB_DEVELOP}, {"recruit", HUD_TB_RECRUIT},
+        {"tax", HUD_TB_TAX}, {"diplomacy", HUD_TB_DIPLOMACY},
+        {"espionage", HUD_TB_ESPIONAGE}, {"entice", HUD_TB_ESPIONAGE},
+        {"officer", HUD_TB_RECRUIT_OFFICER},
+        {"max", HUD_TB_MAX_RESOURCES}, {"reset", HUD_TB_RESET_ACTIONS},
+        {"attack", HUD_TB_ATTACK}, {"defend", HUD_TB_DEFEND},
+        {"duel", HUD_TB_DUEL}, {"grapple", HUD_TB_GRAPPLE},
+        {"auto", HUD_TB_AUTO_RESOLVE},
+        {"movie-open", HUD_TB_MOVIE_OPEN}, {"movie-end", HUD_TB_MOVIE_END}
+    };
+    for (size_t i = 0; i < sizeof(map) / sizeof(map[0]); i++) {
+        if (strcmp(name, map[i].n) == 0) return map[i].a;
+    }
+    if (strncmp(name, "event", 5) == 0) {
+        int idx = atoi(name + 5);
+        if (idx >= 0 && idx < event_count()) return HUD_TB_EVENT_BASE + idx;
+    }
+    if (strncmp(name, "scenario", 8) == 0) {
+        int idx = atoi(name + 8);
+        if (idx >= 1 && idx <= MAX_SCENARIOS) {
+            return HUD_TB_SCENARIO_BASE + (idx - 1);
+        }
+    }
+    if (strncmp(name, "faction", 7) == 0) {
+        int f = atoi(name + 7);
+        if (f >= 0 && f < MAX_FACTIONS) return HUD_TB_FACTION_BASE + f;
+    }
+    return HUD_TB_NONE;
+}
+
 int main(int argc, char *argv[]) {
     const char *screenshot_path = NULL;
     int max_frames = 0;
@@ -1630,6 +1906,20 @@ int main(int argc, char *argv[]) {
     OpeningState g_opening;
     memset(&g_opening, 0, sizeof(g_opening));
 
+    // 子任务 14/15: HUD, onboarding, testbench, council, animation.
+    HudGuide     g_guide;
+    HudTestbench g_testbench;
+    HudCouncil   g_council;
+    memset(&g_guide, 0, sizeof(g_guide));
+    memset(&g_testbench, 0, sizeof(g_testbench));
+    memset(&g_council, 0, sizeof(g_council));
+    bool guide_flag = false;                 // --guide
+    bool testbench_flag = false;             // --testbench
+    const char *testbench_action = NULL;     // --testbench-action <name>
+    const char *movie_arg = NULL;            // --movie <open|end>
+    bool intro_pending = false;              // Opendat intro before title
+    movie_init(&g_movie);
+
     // 子任务 12: encoding / localization CLI.
     bool        dump_officers = false;         // --dump-officers
     bool        dump_messages = false;         // --dump-messages
@@ -1685,6 +1975,19 @@ int main(int argc, char *argv[]) {
             if (faction_override > 14) faction_override = 14;
         } else if (strcmp(argv[i], "--unified") == 0) {
             unified_debug = true;
+        } else if (strcmp(argv[i], "--testbench") == 0) {
+            testbench_flag = true;
+            if (max_frames == 0) max_frames = 2;
+        } else if (strcmp(argv[i], "--testbench-action") == 0 && i + 1 < argc) {
+            testbench_action = argv[++i];
+            testbench_flag = true;
+            if (max_frames == 0) max_frames = 1;
+        } else if (strcmp(argv[i], "--guide") == 0) {
+            guide_flag = true;
+            if (max_frames == 0) max_frames = 1;
+        } else if (strcmp(argv[i], "--movie") == 0 && i + 1 < argc) {
+            movie_arg = argv[++i];
+            if (max_frames == 0) max_frames = 24;
         } else if (strcmp(argv[i], "--do-cmd") == 0 && i + 1 < argc) {
             const char *c = argv[++i];
             if (strcmp(c, "develop") == 0)      do_cmd = TURN_CMD_DEVELOP;
@@ -1968,6 +2271,10 @@ int main(int argc, char *argv[]) {
         show_castle_card = false;
         show_cmd_menu = false;
     }
+    if (testbench_flag || guide_flag) {
+        start_map_mode = true;
+        show_castle_card = true;
+    }
 
     // 子任务 8: the opening flow (Logo.gp title -> scenario -> daimyo -> map)
     // only runs for a plain launch. Every "jump" argument keeps the original
@@ -1984,7 +2291,8 @@ int main(int argc, char *argv[]) {
                     dump_chikei_flag ||
                     dos_import_slot >= 0 || dos_export_slot >= 0 ||
                     scenario_given || castle_given || officer_given ||
-                    faction_override >= 0;
+                    faction_override >= 0 ||
+                    testbench_flag || guide_flag || movie_arg != NULL;
     bool opening_mode = !cli_jump;
 
     if (!hal_video_init("《源平合戦》 - Linux Native Video Engine (SDL2/PC-98)", 2)) {
@@ -2005,6 +2313,10 @@ int main(int argc, char *argv[]) {
     } else {
         fprintf(stderr, "[WARN] cannot load %s\n", pld_file);
     }
+    // 子任务 15: Enddat.gp plays against the defeat/loss palette.
+    size_t lose_pld_size = 0;
+    uint8_t *lose_pld_data = load_file("Losepal.pld", &lose_pld_size);
+    (void)lose_pld_size;
 
     // 2. Load JIS.FNT & FONT.CHR
     size_t jis_size = 0, chr_size = 0;
@@ -2264,9 +2576,40 @@ int main(int argc, char *argv[]) {
     // Portrait embedded in domestic-affairs report dialogues.
     ImageDecoded dlg_kao = {0};
 
+    // 子任务 14: overlays requested on the command line.
+    if (testbench_flag) {
+        hud_testbench_open(&g_testbench);
+        printf("[TESTBENCH] open tab=0\n");
+    }
+    if (guide_flag) {
+        hud_guide_open(&g_guide);
+        printf("[GUIDE] open step=0\n");
+    }
+
     // 子任务 8: start the opening flow for a plain launch (no jump CLI args).
+    // 子任务 15: an interactive launch first plays the Opendat.gp intro; any
+    // input skips it and opens the title. Headless runs skip it so the
+    // existing opening regression clicks stay aligned.
     if (opening_mode) {
-        opening_begin(&g_opening, s_asset_dir);
+        const bool interactive_intro = (max_frames == 0 && !screenshot_path);
+        if (interactive_intro &&
+            movie_start(&g_movie, MOVIE_KIND_OPEN, false, s_asset_dir)) {
+            intro_pending = true;
+            g_last_movie_bank = -1;
+        } else {
+            opening_begin(&g_opening, s_asset_dir);
+        }
+    }
+
+    // 子任务 15: --movie <open|end> headless animation player.
+    if (movie_arg) {
+        int kind = (strcmp(movie_arg, "end") == 0) ? MOVIE_KIND_END
+                                                   : MOVIE_KIND_OPEN;
+        if (movie_start(&g_movie, kind, false, s_asset_dir)) {
+            g_last_movie_bank = -1;
+            printf("[MOVIE] cli kind=%s\n",
+                   kind == MOVIE_KIND_END ? "end" : "open");
+        }
     }
 
     // --preview-npk: decode one NPK016 block and display it standalone.
@@ -2528,6 +2871,42 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    // 子任务 14: context shared by the CLI testbench action and the F2 overlay.
+    TestbenchCtx tb_ctx;
+    memset(&tb_ctx, 0, sizeof(tb_ctx));
+    tb_ctx.sc = &g_scenario;
+    tb_ctx.ts = &g_turn;
+    tb_ctx.snd_path = snd_path;
+    tb_ctx.data_dir = s_asset_dir;
+    tb_ctx.msgs = &g_messages;
+    tb_ctx.kao_data = kao_data;
+    tb_ctx.kao_size = kao_size;
+    tb_ctx.officer_offsets = officer_offsets;
+    tb_ctx.movie = &g_movie;
+    tb_ctx.cur_castle = &cur_castle;
+    tb_ctx.cur_officer = &cur_officer;
+    tb_ctx.cur_scenario = &cur_scenario;
+    tb_ctx.player_faction = &player_faction;
+    tb_ctx.show_dialog = &show_dialog;
+    tb_ctx.dlg_custom = &dlg_custom;
+    tb_ctx.dlg_officer = &dlg_officer;
+    tb_ctx.dlg_text = dlg_custom_text;
+    tb_ctx.dlg_size = sizeof(dlg_custom_text);
+    tb_ctx.dlg_kao = &dlg_kao;
+    tb_ctx.cur_kao = &cur_kao;
+
+    if (testbench_action) {
+        int act = tb_parse_action(testbench_action);
+        if (act != HUD_TB_NONE) {
+            run_testbench_action(&tb_ctx, act);
+            camera_x = clamp_camera_x(g_scenario.castles[cur_castle].map_x - 320,
+                                      map_w);
+        } else {
+            fprintf(stderr, "[WARN] unknown --testbench-action '%s'\n",
+                    testbench_action);
+        }
+    }
+
     update_window_title(cur_officer, use_mask, bg_mode, map_mode, camera_x, cur_scenario, &g_scenario, cur_castle);
 
     InputState in;
@@ -2568,6 +2947,253 @@ int main(int argc, char *argv[]) {
 
         const YphzKey key = in.key;
 
+        // --- 子任务 14/15: continuous animation owns input while active -----
+        if (g_movie.active) {
+            bool skip = in.lbutton_pressed || in.rbutton_pressed ||
+                        key != YPHZ_KEY_NONE;
+            if (skip) {
+                movie_stop(&g_movie);
+                printf("[MOVIE] skipped\n");
+            } else {
+                movie_update(&g_movie);
+            }
+            if (g_movie.active) {
+                int bank = movie_palette_bank(&g_movie);
+                if (bank != g_last_movie_bank) {
+                    const uint8_t *pal =
+                        (g_movie.kind == MOVIE_KIND_END && lose_pld_data)
+                            ? lose_pld_data : pld_data;
+                    if (pal) hal_video_load_pld_bank(pal, bank);
+                    g_last_movie_bank = bank;
+                }
+            }
+            if (!g_movie.active && intro_pending) {
+                intro_pending = false;
+                opening_begin(&g_opening, s_asset_dir);
+            }
+            goto render_frame;
+        }
+
+        // --- 子任务 14: testbench (F2) and onboarding (F1) ------------------
+        if (key == YPHZ_KEY_F2) {
+            if (g_testbench.visible) {
+                hud_testbench_close(&g_testbench);
+                printf("[TESTBENCH] close\n");
+            } else {
+                hud_testbench_open(&g_testbench);
+                printf("[TESTBENCH] open tab=0\n");
+            }
+            goto render_frame;
+        }
+        if (key == YPHZ_KEY_F1 && !g_testbench.visible) {
+            if (g_guide.active) {
+                hud_guide_close(&g_guide);
+                printf("[GUIDE] close\n");
+            } else {
+                hud_guide_open(&g_guide);
+                printf("[GUIDE] open step=0\n");
+            }
+            goto render_frame;
+        }
+
+        if (g_testbench.visible) {
+            if (show_dialog) {
+                if (key != YPHZ_KEY_NONE || in.lbutton_pressed ||
+                    in.rbutton_pressed) {
+                    show_dialog = false;
+                }
+                goto render_frame;
+            }
+            if (key == YPHZ_KEY_ESCAPE || in.rbutton_pressed) {
+                hud_testbench_close(&g_testbench);
+                printf("[TESTBENCH] close\n");
+                goto render_frame;
+            }
+
+            int dtab = 0, dsel = 0;
+            if (key == YPHZ_KEY_LEFT)  dtab = -1;
+            if (key == YPHZ_KEY_RIGHT) dtab = 1;
+            if (key == YPHZ_KEY_UP)    dsel = -1;
+            if (key == YPHZ_KEY_DOWN)  dsel = 1;
+            if (dtab || dsel) hud_testbench_move(&g_testbench, dtab, dsel);
+
+            bool activate = (key == YPHZ_KEY_ENTER);
+            if (in.lbutton_pressed && in.mouse_inside) {
+                int t = hud_testbench_hit_tab(in.mouse_x, in.mouse_y);
+                if (t >= 0) {
+                    g_testbench.tab = t;
+                    g_testbench.sel = 0;
+                } else {
+                    int it = hud_testbench_hit_item(&g_testbench,
+                                                    in.mouse_x, in.mouse_y);
+                    if (it >= 0) {
+                        g_testbench.sel = it;
+                        activate = true;
+                    }
+                }
+            }
+
+            if (activate) {
+                int act = hud_testbench_action(g_testbench.tab,
+                                               g_testbench.sel);
+                if (act != HUD_TB_NONE) {
+                    run_testbench_action(&tb_ctx, act);
+                    if (act >= HUD_TB_ATTACK && act <= HUD_TB_AUTO_RESOLVE) {
+                        hud_testbench_close(&g_testbench);
+                    } else if (act >= HUD_TB_EVENT_BASE) {
+                        hud_testbench_close(&g_testbench);
+                    }
+                    if (cur_castle >= 0 && cur_castle < g_scenario.num_castles) {
+                        camera_x = clamp_camera_x(
+                            g_scenario.castles[cur_castle].map_x - 320, map_w);
+                    }
+                    update_window_title(cur_officer, use_mask, bg_mode,
+                                        map_mode, camera_x, cur_scenario,
+                                        &g_scenario, cur_castle);
+                }
+            }
+            goto render_frame;
+        }
+
+        if (g_guide.active) {
+            if (key == YPHZ_KEY_ESCAPE || in.rbutton_pressed) {
+                hud_guide_close(&g_guide);
+                printf("[GUIDE] close\n");
+            } else if (key == YPHZ_KEY_LEFT) {
+                hud_guide_move(&g_guide, -1);
+            } else if (key == YPHZ_KEY_RIGHT || key == YPHZ_KEY_ENTER) {
+                hud_guide_move(&g_guide, 1);
+            } else if (in.lbutton_pressed && in.mouse_inside) {
+                int b = hud_guide_hit_button(in.mouse_x, in.mouse_y);
+                if (b == 0) hud_guide_move(&g_guide, -1);
+                else if (b == 1) hud_guide_move(&g_guide, 1);
+                else if (b == 2) {
+                    hud_guide_close(&g_guide);
+                    printf("[GUIDE] close\n");
+                }
+            }
+            goto render_frame;
+        }
+
+        // --- 子任务 15: council chamber owns input while open ---------------
+        if (g_council.visible) {
+            if (show_dialog) {
+                if (key != YPHZ_KEY_NONE || in.lbutton_pressed ||
+                    in.rbutton_pressed) {
+                    show_dialog = false;
+                }
+                goto render_frame;
+            }
+            if (key == YPHZ_KEY_ESCAPE || in.rbutton_pressed) {
+                hud_council_close(&g_council);
+                printf("[COUNCIL] close\n");
+                goto render_frame;
+            }
+
+            int dtab = 0, dsel = 0;
+            if (key == YPHZ_KEY_LEFT)  dtab = -1;
+            if (key == YPHZ_KEY_RIGHT) dtab = 1;
+            if (key == YPHZ_KEY_UP)    dsel = -1;
+            if (key == YPHZ_KEY_DOWN)  dsel = 1;
+            if (dtab || dsel) hud_council_move(&g_council, dtab, dsel);
+
+            bool activate = (key == YPHZ_KEY_ENTER);
+            if (in.lbutton_pressed && in.mouse_inside) {
+                int t = hud_council_hit_tab(in.mouse_x, in.mouse_y);
+                if (t >= 0) {
+                    g_council.tab = t;
+                    g_council.sel = 0;
+                } else {
+                    int it = hud_council_hit_item(&g_council,
+                                                  in.mouse_x, in.mouse_y);
+                    if (it >= 0) {
+                        g_council.sel = it;
+                        activate = true;
+                    }
+                }
+            }
+
+            bool player_here = (cur_castle >= 0 &&
+                                cur_castle < g_scenario.num_castles &&
+                                g_scenario.castles[cur_castle].faction_id ==
+                                    g_turn.player_faction);
+            if (activate && player_here) {
+                TurnCommand cmd = hud_council_command(g_council.tab,
+                                                      g_council.sel);
+                if (cmd == TURN_CMD_OFFICERS) {
+                    roster_count = turn_list_castle_officers(
+                        &g_scenario, g_turn.player_faction, cur_castle,
+                        roster_ids, MAX_OFFICERS);
+                    roster_scroll = 0;
+                    roster_select_mode = false;
+                    roster_cmd = TURN_CMD_NONE;
+                    show_officer_list = true;
+                    hud_council_close(&g_council);
+                    printf("[COUNCIL] cmd=OFFICERS\n");
+                } else if (cmd == TURN_CMD_MOVE || cmd == TURN_CMD_ATTACK) {
+                    roster_count = turn_list_castle_officers(
+                        &g_scenario, g_turn.player_faction, cur_castle,
+                        roster_ids, MAX_OFFICERS);
+                    roster_scroll = 0;
+                    roster_select_mode = true;
+                    roster_cmd = cmd;
+                    show_officer_list = true;
+                    hud_council_close(&g_council);
+                    printf("[COUNCIL] cmd=%s pick officer\n",
+                           turn_command_ascii(cmd));
+                } else if (cmd == TURN_CMD_END) {
+                    TurnResult r;
+                    turn_run_command(&g_turn, &g_scenario, cur_castle, cmd, &r);
+                    printf("[TURN] %s castle=%d ok=%d gold=%+d rice=%+d\n",
+                           turn_command_ascii(cmd), cur_castle, r.ok ? 1 : 0,
+                           r.d_gold, r.d_rice);
+                    ai_run_turn(&g_turn, &g_scenario, &ai_report);
+                    print_ai_report(&ai_report);
+                    pending_idx = 0;
+                    printf("[AI] date=%d/%d domestic=%d attacks=%d "
+                           "captures=%d pending=%d\n",
+                           g_turn.year, g_turn.month, ai_report.domestic,
+                           ai_report.attacks, ai_report.captures,
+                           ai_report.pending_count);
+                    g_queued_event = event_match_date(g_turn.year, g_turn.month);
+                    char ai_sum[256];
+                    build_ai_summary(&ai_report, ai_sum, sizeof(ai_sum));
+                    char combined[TURN_TEXT_MAX + 320];
+                    snprintf(combined, sizeof(combined), "%s\n%s",
+                             r.text, ai_sum);
+                    show_dialog = true;
+                    dlg_custom = true;
+                    dlg_officer = -1;
+                    snprintf(dlg_custom_text, sizeof(dlg_custom_text), "%.*s",
+                             (int)sizeof(dlg_custom_text) - 1, combined);
+                    hud_council_close(&g_council);
+                    printf("[COUNCIL] end turn\n");
+                    update_window_title(cur_officer, use_mask, bg_mode,
+                                        map_mode, camera_x, cur_scenario,
+                                        &g_scenario, cur_castle);
+                } else if (cmd != TURN_CMD_NONE) {
+                    TurnResult r;
+                    turn_run_command(&g_turn, &g_scenario, cur_castle, cmd, &r);
+                    printf("[COUNCIL] cmd=%s officer=%d ok=%d gold=%+d "
+                           "rice=%+d troops=%+d morale=%+d\n",
+                           turn_command_ascii(cmd), r.officer_id,
+                           r.ok ? 1 : 0, r.d_gold, r.d_rice, r.d_troops,
+                           r.d_morale);
+                    if (r.text[0]) {
+                        show_turn_result(&r, &show_dialog, &dlg_custom,
+                                         &dlg_officer, dlg_custom_text,
+                                         sizeof(dlg_custom_text), &dlg_kao,
+                                         &g_scenario, kao_data, kao_size,
+                                         officer_offsets);
+                    }
+                    update_window_title(cur_officer, use_mask, bg_mode,
+                                        map_mode, camera_x, cur_scenario,
+                                        &g_scenario, cur_castle);
+                }
+            }
+            goto render_frame;
+        }
+
         // --- 子任务 8: opening flow (title -> scenario -> daimyo) -----------
         // While it is on screen the opening owns all input; on the confirming
         // frame it hands a ready Scenario/TurnState back and we jump straight to
@@ -2594,6 +3220,9 @@ int main(int argc, char *argv[]) {
                        "date=%d/%d\n",
                        player_faction, cur_castle, cur_officer,
                        g_turn.year, g_turn.month);
+                // 子任务 14: onboard a new game with the beginner's guide.
+                hud_guide_open(&g_guide);
+                printf("[GUIDE] open step=0\n");
             }
             goto render_frame;
         }
@@ -2848,6 +3477,123 @@ int main(int argc, char *argv[]) {
         } else if (map_mode) {
             const bool player_castle =
                 (g_scenario.castles[cur_castle].faction_id == g_turn.player_faction);
+
+            // 子任务 14: persistent HUD toolbar. It sits below every modal, so
+            // clicks are accepted only when no dialogue/panel is open.
+            if (in.lbutton_pressed && in.mouse_inside && !show_dialog &&
+                !show_treasure && !show_officer_list && list_mode == 0 &&
+                !g_council.visible) {
+                int hb = hud_toolbar_hit(in.mouse_x, in.mouse_y);
+                if (hb >= 0) {
+                    ScenarioCastle *hc = &g_scenario.castles[cur_castle];
+                    printf("[HUD] button=%s\n", hud_button_ascii(hb));
+                    switch (hb) {
+                        case HUD_BTN_COUNCIL:
+                            if (hc->faction_id != g_turn.player_faction) {
+                                show_dialog = true;
+                                dlg_custom = true;
+                                dlg_officer = -1;
+                                snprintf(dlg_custom_text, sizeof(dlg_custom_text),
+                                         "\x8e\xa9\x90\xa8\x97\xcd\x82\xcc\x8f\xe9\x82\xcc\x82\xdd"); // 自勢力の城のみ
+                            } else {
+                                int lord = hc->lord_officer_id;
+                                if (lord >= 0 && lord < g_scenario.num_officers) {
+                                    cur_officer = lord;
+                                    refresh_officer_portrait(
+                                        cur_officer, &g_scenario, kao_data,
+                                        kao_size, officer_offsets, &cur_kao);
+                                }
+                                hud_council_open(&g_council);
+                                show_castle_card = false;
+                                show_cmd_menu = false;
+                                printf("[COUNCIL] open castle=%d\n", cur_castle);
+                            }
+                            break;
+                        case HUD_BTN_MAP:
+                            map_mode = true;
+                            show_castle_card = false;
+                            show_cmd_menu = false;
+                            break;
+                        case HUD_BTN_TREASURE:
+                            show_treasure = true;
+                            treasure_msg[0] = 0;
+                            show_castle_card = false;
+                            show_cmd_menu = false;
+                            break;
+                        case HUD_BTN_ROSTER:
+                            roster_count = turn_list_castle_officers(
+                                &g_scenario, g_turn.player_faction, cur_castle,
+                                roster_ids, MAX_OFFICERS);
+                            roster_scroll = 0;
+                            roster_select_mode = false;
+                            roster_cmd = TURN_CMD_NONE;
+                            show_officer_list = true;
+                            show_castle_card = false;
+                            show_cmd_menu = false;
+                            break;
+                        case HUD_BTN_SAVE: {
+                            bool ok = save_game(save_slot, &g_scenario, &g_turn);
+                            printf("[SAVE] %s %s (%zu bytes) hash=0x%08x\n",
+                                   ok ? "wrote" : "FAILED", save_slot,
+                                   save_snapshot_size(),
+                                   save_state_hash(&g_scenario, &g_turn));
+                            show_dialog = true;
+                            dlg_custom = true;
+                            dlg_officer = -1;
+                            snprintf(dlg_custom_text, sizeof(dlg_custom_text),
+                                     "%s %s\n%.100s", SJIS_SAVE,
+                                     ok ? SJIS_DONE : SJIS_FAIL, save_slot);
+                            break;
+                        }
+                        case HUD_BTN_LOAD: {
+                            bool ok = load_game(save_slot, &g_scenario, &g_turn);
+                            printf("[LOAD] %s %s hash=0x%08x\n",
+                                   ok ? "read" : "FAILED", save_slot,
+                                   save_state_hash(&g_scenario, &g_turn));
+                            show_dialog = true;
+                            dlg_custom = true;
+                            dlg_officer = -1;
+                            snprintf(dlg_custom_text, sizeof(dlg_custom_text),
+                                     "%s %s\n%.100s", SJIS_LOAD,
+                                     ok ? SJIS_DONE : SJIS_FAIL, save_slot);
+                            if (ok) {
+                                player_faction = g_turn.player_faction;
+                                if (cur_castle < 0 ||
+                                    cur_castle >= g_scenario.num_castles) {
+                                    cur_castle = 0;
+                                }
+                                if (cur_officer < 0 ||
+                                    cur_officer >= g_scenario.num_officers) {
+                                    cur_officer = 0;
+                                }
+                                refresh_officer_portrait(
+                                    cur_officer, &g_scenario, kao_data,
+                                    kao_size, officer_offsets, &cur_kao);
+                                show_cmd_menu = (g_scenario.castles[cur_castle]
+                                                     .faction_id ==
+                                                 g_turn.player_faction);
+                                update_window_title(cur_officer, use_mask,
+                                                    bg_mode, map_mode,
+                                                    camera_x, cur_scenario,
+                                                    &g_scenario, cur_castle);
+                            }
+                            break;
+                        }
+                        case HUD_BTN_GUIDE:
+                            hud_guide_open(&g_guide);
+                            printf("[GUIDE] open step=0\n");
+                            break;
+                        case HUD_BTN_TESTBENCH:
+                            hud_testbench_open(&g_testbench);
+                            printf("[TESTBENCH] open tab=0\n");
+                            break;
+                        default:
+                            break;
+                    }
+                    goto render_frame;
+                }
+            }
+
             const bool modal_open = show_dialog || show_officer_list ||
                                     show_treasure ||
                                     (show_cmd_menu && player_castle);
@@ -3285,7 +4031,10 @@ int main(int argc, char *argv[]) {
     render_frame:
         hal_video_clear(0);
 
-        if (opening_active(&g_opening)) {
+        if (g_movie.active) {
+            // 子任务 14/15: Opendat/Enddat animation player.
+            movie_render(&g_movie);
+        } else if (opening_active(&g_opening)) {
             // 子任务 8: title / scenario / daimyo screens.
             opening_render(&g_opening, &g_scenario, kao_data, kao_size,
                            officer_offsets);
@@ -3328,6 +4077,10 @@ int main(int argc, char *argv[]) {
         } else if (g_event_mode) {
             // 歴史絵巻 (Mainevt.gp CG + Message.gp narration).
             render_event();
+        } else if (g_council.visible) {
+            // 子任务 15: 政庁/評定 council chamber (Maincmd2.gp).
+            hud_council_render(&g_council, &g_scenario, &g_turn, cur_castle,
+                               &bg_palace, &cur_kao);
         } else if (g_battle_mode) {
             // 合戦 (Hkeshiki.gp background + portraits + commands).
             render_battle(&g_scenario);
@@ -3398,6 +4151,11 @@ int main(int argc, char *argv[]) {
                      "\x81\x79%s\x81\x7a %s(%s) \x8f\xe9\x8e\xe5\x81\x46%s  \x95\xba\x97\xcd\x81\x46%5d  \x90\xce\x8d\x82\x81\x46%5d  \x8a\x58\x93\xb9\x81\x46%d\x89\xd3\x8f\x8a",
                      sel->name_sjis, fac->name_sjis, fac->flag_sjis, lord_name, sel->troops, sel->rice, sel->num_conns);
             hal_video_draw_text_sjis(16, 382, bot_str, 7);
+
+            // 子任务 14: persistent clickable HUD toolbar.
+            int hud_hover = in.mouse_inside
+                                ? hud_toolbar_hit(in.mouse_x, in.mouse_y) : -1;
+            hud_toolbar_render(hud_hover);
 
             // Castle Detail Card Modal Overlay (hidden while the 移動/出陣
             // picker is open so the highlighted road lanes stay visible).
@@ -3699,6 +4457,13 @@ int main(int argc, char *argv[]) {
             hal_video_draw_text_sjis(16, 382, bot_status, 7);
         }
 
+        // 子任务 14: testbench sits above the base view but below its result
+        // dialogue; the guide is the topmost modal.
+        if (g_testbench.visible && !g_movie.active) {
+            hud_testbench_render(&g_testbench, &g_scenario, &g_turn,
+                                 cur_castle);
+        }
+
         // Dialogue box overlays both modes (drawn last so it sits on top).
         if (show_dialog) {
             char tag[64];
@@ -3722,6 +4487,11 @@ int main(int argc, char *argv[]) {
             if (text) {
                 draw_dialog_box(text, tag, portrait);
             }
+        }
+
+        if (g_guide.active && !g_movie.active) {
+            hud_guide_render(&g_guide, &cur_kao, &g_scenario, &g_turn,
+                             cur_castle);
         }
 
         hal_video_present();
@@ -3789,10 +4559,12 @@ int main(int argc, char *argv[]) {
     npk_free(&s_ending_pack);
     free_decoded_image(&s_event_img);
     npk_free(&s_event_pack);
+    movie_free(&g_movie);
     if (bg_hik.pixels) free_decoded_image(&bg_hik);
     if (bg_palace.pixels) free_decoded_image(&bg_palace);
     if (japan_map_pixels) free(japan_map_pixels);
     if (pld_data) free(pld_data);
+    if (lose_pld_data) free(lose_pld_data);
     if (jis_data) free(jis_data);
     if (chr_data) free(chr_data);
     if (exe_data) free(exe_data);

@@ -92,7 +92,7 @@ check "preview-npk"             "Preview Mainitem.gp block 0/19: 64x64" --previe
 check "test-msg"                "Loaded Message.gp: 5 LS11 entries" --test-msg 0
 
 echo "== sub-task 8: save / load / opening =="
-check "save size"               "SAVE\] wrote $TMP/x.sav \(63422 bytes\)" --do-cmd develop -c 30 --faction 0 --save "$TMP/x.sav"
+check "save size"               "SAVE\] wrote $TMP/x.sav \(63655 bytes\)" --do-cmd develop -c 30 --faction 0 --save "$TMP/x.sav"
 check "opening flow"            "enter map: faction=0 castle=30 officer=0" \
       --click 320,200@2 --click 60,110@4 --click 60,74@6 --frames 10
 check_not "opening not leaked"  "enter map" --map -c 30
@@ -206,6 +206,18 @@ check "chikei 100x100 grid"     "grid=100x100 formation=60B ids=13" --dump-chike
 check "chikei terrain ids"      "0=4279 1=1886 2=1284"         --dump-chikei
 check "raw width inspector"     "Raw Maincmd.gp: 96x1275 \(4-plane, width=96, stride=48\)" --preview-raw Maincmd.gp --raw-width 96 --frames 2
 check "raw tile bank inspector" "Raw Montage.gp: 96x96 \(4-plane, width=96" --preview-raw Montage.gp --raw-width 96 --raw-height 96 --frames 2
+
+echo "== sub-task 14: HUD toolbar, onboarding, testbench =="
+check "HUD council button"       "\[HUD\] button=council" --map -c 30 --click 40,368@1 --frames 2
+check "council chamber opens"    "\[COUNCIL\] open castle=30" --map -c 30 --click 40,368@1 --frames 2
+check "onboarding guide"         "\[GUIDE\] open step=0" --guide --map -c 30
+check "testbench opens"          "\[TESTBENCH\] open tab=0" --testbench --map -c 30 --frames 2
+check "testbench max cheat"      "\[TESTBENCH\] MAX castle=30 gold=99999 rice=99999 troops=2000" --testbench-action max -c 30
+check "testbench action reset"   "\[TESTBENCH\] RESET actions=0" --testbench-action reset -c 30
+check "testbench historical event" "\[TESTBENCH\] EVENT index=0" --testbench-action event0
+check "testbench Opendat player" "\[MOVIE\] start file=Opendat.gp blocks=52 loop=1" --testbench-action movie-open --frames 2
+check "testbench scenario switch" "\[TESTBENCH\] SCENARIO 2 castles=39" --testbench-action scenario2
+check "testbench faction switch" "\[TESTBENCH\] FACTION 1 castle=0 officer=45" --testbench-action faction1
 
 echo "-------------------------------------------------------------------"
 printf 'TOTAL %d checks: %d passed, %d failed\n' "$((pass + fail))" "$pass" "$fail"

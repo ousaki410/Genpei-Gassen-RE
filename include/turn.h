@@ -30,7 +30,15 @@ typedef enum {
     TURN_CMD_MOVE,      // 移動  : transfer an officer + troops to an own castle
     TURN_CMD_ATTACK,    // 出陣  : march on an adjacent enemy castle (starts 合戦)
     TURN_CMD_OFFICERS,  // 武将  : UI-only officer roster (no action consumed)
-    TURN_CMD_END        // 終了  : advance the calendar + settle income
+    TURN_CMD_END,       // 終了  : advance the calendar + settle income
+    // 子任务 14/15: council-chamber commands (all consume one officer action).
+    TURN_CMD_CHARITY,          // 施し      : gold + rice -> morale
+    TURN_CMD_RECRUIT_OFFICER,  // 登用      : recruit an unaffiliated officer
+    TURN_CMD_REWARD,           // 褒美      : gold -> officer loyalty
+    TURN_CMD_DIPLOMACY,        // 親善      : gold -> faction relations / truce
+    TURN_CMD_COURT,            // 朝廷献金  : gold -> prestige, rank + morale
+    TURN_CMD_ENTICE,           // 調略      : gold -> enemy officer defects
+    TURN_CMD_RUMOR             // 流言      : gold -> enemy morale/troops
 } TurnCommand;
 
 typedef struct {
@@ -39,6 +47,10 @@ typedef struct {
     int     month;                  // mirrors Scenario::month (1..12)
     uint8_t acted[MAX_OFFICERS];    // 1 = this officer has already acted this month
     TreasureState treasures;        // 子任务 9: 家宝 ownership / grants
+    // 子任务 14/15: court prestige and pairwise clan relations (0..100).
+    int     prestige;               // 朝廷への貢献度
+    int     court_rank;             // 0..5, derived from prestige
+    uint8_t relations[MAX_FACTIONS][MAX_FACTIONS];
 } TurnState;
 
 typedef struct {
@@ -121,5 +133,15 @@ bool turn_run_faction_command(TurnState *ts, Scenario *sc, int faction_id,
 bool turn_end(TurnState *ts, Scenario *sc, TurnResult *res);
 
 const char* turn_command_name(TurnCommand cmd);  // SJIS label
+const char* turn_command_ascii(TurnCommand cmd); // headless log label
+
+// 子任务 14/15: pairwise clan relations (0..100, initial 50, self 100).
+int  turn_relation(const TurnState *ts, int a, int b);
+void turn_set_relation(TurnState *ts, int a, int b, int value);
+
+// Testbench cheats (子任务 14): fill the selected castle's coffers/garrison
+// and clear every officer's monthly action flag.
+void turn_cheat_max(TurnState *ts, Scenario *sc, int castle_id);
+void turn_cheat_reset_actions(TurnState *ts);
 
 #endif // YPHZ_TURN_H

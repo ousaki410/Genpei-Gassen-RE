@@ -34,6 +34,17 @@
 #define SJIS_MONTH     "\x8c\x8e"                                        // 月
 #define SJIS_ROSTER    "\x95\x90\x8f\xab\x88\xea\x97\x97"                // 武将一覧
 
+// 子任务 14/15: council-chamber commands.
+#define SJIS_CHARITY   "\x8e\x7b\x82\xb5"                    // 施し
+#define SJIS_APPOINT   "\x93\x6f\x97\x70"                    // 登用
+#define SJIS_REWARD    "\x95\x9d\x94\xfc"                    // 褒美
+#define SJIS_DIPLOMACY "\x90\x65\x91\x50"                    // 親善
+#define SJIS_COURT     "\x92\xa9\x92\xe3\x8c\x5b\x8b\xe0"    // 朝廷献金
+#define SJIS_ENTICE    "\x92\xb2\x97\xa5"                    // 調略
+#define SJIS_RUMOR     "\x97\xac\x8c\xbe"                    // 流言
+#define SJIS_FAIL      "\x8e\xb8\x94\x73"                    // 失敗
+#define SJIS_TRUCE     "\x92\xe2\x90\xed"                    // 停戦
+
 const char* turn_command_name(TurnCommand cmd) {
     switch (cmd) {
         case TURN_CMD_DEVELOP:  return SJIS_DEVELOP;
@@ -43,7 +54,34 @@ const char* turn_command_name(TurnCommand cmd) {
         case TURN_CMD_ATTACK:   return SJIS_ATTACK;
         case TURN_CMD_OFFICERS: return SJIS_OFFICERS;
         case TURN_CMD_END:      return SJIS_END;
+        case TURN_CMD_CHARITY:  return SJIS_CHARITY;
+        case TURN_CMD_RECRUIT_OFFICER: return SJIS_APPOINT;
+        case TURN_CMD_REWARD:   return SJIS_REWARD;
+        case TURN_CMD_DIPLOMACY:return SJIS_DIPLOMACY;
+        case TURN_CMD_COURT:    return SJIS_COURT;
+        case TURN_CMD_ENTICE:   return SJIS_ENTICE;
+        case TURN_CMD_RUMOR:    return SJIS_RUMOR;
         default:                return "";
+    }
+}
+
+const char* turn_command_ascii(TurnCommand cmd) {
+    switch (cmd) {
+        case TURN_CMD_DEVELOP:  return "DEVELOP";
+        case TURN_CMD_RECRUIT:  return "RECRUIT";
+        case TURN_CMD_TAX:      return "TAX";
+        case TURN_CMD_MOVE:     return "MOVE";
+        case TURN_CMD_ATTACK:   return "ATTACK";
+        case TURN_CMD_OFFICERS: return "OFFICERS";
+        case TURN_CMD_END:      return "END";
+        case TURN_CMD_CHARITY:  return "CHARITY";
+        case TURN_CMD_RECRUIT_OFFICER: return "APPOINT";
+        case TURN_CMD_REWARD:   return "REWARD";
+        case TURN_CMD_DIPLOMACY:return "DIPLOMACY";
+        case TURN_CMD_COURT:    return "COURT";
+        case TURN_CMD_ENTICE:   return "ENTICE";
+        case TURN_CMD_RUMOR:    return "RUMOR";
+        default:                return "NONE";
     }
 }
 
@@ -54,6 +92,49 @@ void turn_init(TurnState *ts, const Scenario *sc, int faction_id) {
     ts->year = sc ? sc->year : 1180;
     ts->month = sc ? sc->month : 9;
     treasure_init(&ts->treasures, sc);
+
+    // 子任务 14: all clans start neutral (50); a clan is always friendly with
+    // itself. The table is symmetric and clamped to 0..100.
+    for (int a = 0; a < MAX_FACTIONS; a++) {
+        for (int b = 0; b < MAX_FACTIONS; b++) {
+            ts->relations[a][b] = (a == b) ? 100 : 50;
+        }
+    }
+    ts->prestige = 0;
+    ts->court_rank = 0;
+}
+
+int turn_relation(const TurnState *ts, int a, int b) {
+    if (!ts || a < 0 || a >= MAX_FACTIONS || b < 0 || b >= MAX_FACTIONS) {
+        return 50;
+    }
+    return ts->relations[a][b];
+}
+
+void turn_set_relation(TurnState *ts, int a, int b, int value) {
+    if (!ts || a < 0 || a >= MAX_FACTIONS || b < 0 || b >= MAX_FACTIONS) return;
+    if (value < 0) value = 0;
+    if (value > 100) value = 100;
+    ts->relations[a][b] = (uint8_t)value;
+    ts->relations[b][a] = (uint8_t)value;
+}
+
+void turn_cheat_max(TurnState *ts, Scenario *sc, int castle_id) {
+    if (!sc || castle_id < 0 || castle_id >= sc->num_castles) return;
+    ScenarioCastle *cs = &sc->castles[castle_id];
+    cs->gold = 99999;
+    cs->rice = 99999;
+    cs->troops = 2000;
+    cs->morale = 300;
+    cs->defense = 1000;
+    if (ts) {
+        ts->prestige = 1000;
+        ts->court_rank = 5;
+    }
+}
+
+void turn_cheat_reset_actions(TurnState *ts) {
+    turn_reset_actions(ts);
 }
 
 void turn_reset_actions(TurnState *ts) {
@@ -254,6 +335,378 @@ int turn_recruit_cap(const ScenarioCastle *cs) {
     return cs ? 500 + cs->rice / 8 : 0;
 }
 
+// ---------------------------------------------------------------------------
+// 子任务 14/15: council-chamber actions (charity / personnel / diplomacy /
+// espionage). Each action consumes exactly one idle officer's monthly action,
+// costs gold (and sometimes provisions), and is deterministic for neutral
+// headless runs.
+// ---------------------------------------------------------------------------
+
+static uint32_t turn_rng(uint32_t *state) {
+    uint32_t x = *state;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    *state = x;
+    return x;
+}
+
+static int find_unaffiliated_officer(const Scenario *sc, int castle_id) {
+    if (!sc) return -1;
+    int fallback = -1;
+    for (int i = 0; i < sc->num_officers; i++) {
+        const ScenarioOfficer *o = &sc->officers[i];
+        if (!o->is_active || o->faction_id >= 0) continue;
+        if (o->castle_id == castle_id) return i;
+        if (fallback < 0) fallback = i;
+    }
+    return fallback;
+}
+
+static int find_entice_target(const Scenario *sc, int castle_id, int own_faction,
+                              int *out_castle, int *out_faction) {
+    int best = -1;
+    int best_loyalty = 101;
+    int best_castle = -1;
+    int best_faction = -1;
+    if (!sc || castle_id < 0 || castle_id >= sc->num_castles) return -1;
+
+    const ScenarioCastle *from = &sc->castles[castle_id];
+    for (int k = 0; k < from->num_conns; k++) {
+        int cc = from->conns[k];
+        if (cc < 0 || cc >= sc->num_castles) continue;
+        int cf = sc->castles[cc].faction_id;
+        if (cf < 0 || cf == own_faction) continue;
+        for (int i = 0; i < sc->num_officers; i++) {
+            const ScenarioOfficer *o = &sc->officers[i];
+            if (!o->is_active || o->faction_id != cf || o->castle_id != cc) continue;
+            if (o->loyalty < best_loyalty) {
+                best_loyalty = o->loyalty;
+                best = i;
+                best_castle = cc;
+                best_faction = cf;
+            }
+        }
+    }
+    if (best >= 0) {
+        if (out_castle) *out_castle = best_castle;
+        if (out_faction) *out_faction = best_faction;
+    }
+    return best;
+}
+
+static int find_adjacent_enemy(const Scenario *sc, int castle_id, int own_faction) {
+    if (!sc || castle_id < 0 || castle_id >= sc->num_castles) return -1;
+    const ScenarioCastle *from = &sc->castles[castle_id];
+    int best = -1;
+    for (int k = 0; k < from->num_conns; k++) {
+        int cc = from->conns[k];
+        if (cc < 0 || cc >= sc->num_castles) continue;
+        if (sc->castles[cc].faction_id == own_faction) continue;
+        if (best < 0 || sc->castles[cc].troops < sc->castles[best].troops) {
+            best = cc;
+        }
+    }
+    return best;
+}
+
+static bool run_council_command(TurnState *ts, Scenario *sc, int faction_id,
+                                int castle_id, TurnCommand cmd, int officer_id,
+                                TurnResult *res) {
+    ScenarioCastle *cs = &sc->castles[castle_id];
+    const ScenarioOfficer *me;
+    int oid = officer_id;
+
+    if (oid >= 0) {
+        if (oid >= sc->num_officers ||
+            !officer_serves_at(&sc->officers[oid], faction_id, castle_id)) {
+            snprintf(res->text, sizeof(res->text), SJIS_NO_OFF);
+            return false;
+        }
+        if (turn_officer_has_acted(ts, oid)) {
+            res->officer_id = oid;
+            snprintf(res->text, sizeof(res->text), "%s\n" SJIS_ALL_ACTED,
+                     sc->officers[oid].full_name_sjis);
+            return false;
+        }
+    } else {
+        oid = turn_find_idle_officer_faction(sc, ts, faction_id, castle_id);
+        if (oid < 0) {
+            snprintf(res->text, sizeof(res->text),
+                     SJIS_NO_OFF "\n" SJIS_ALL_ACTED);
+            return false;
+        }
+    }
+    me = &sc->officers[oid];
+    res->officer_id = oid;
+
+    uint32_t rng = (uint32_t)(castle_id * 131u + ts->year * 17u +
+                              ts->month * 7u + oid * 977u +
+                              (uint32_t)cmd * 13u + 1u);
+    turn_rng(&rng);  // discard the seed sample
+
+    switch (cmd) {
+        case TURN_CMD_CHARITY: {
+            int gold_cost = 150 + cs->troops / 20;
+            int rice_cost = 60;
+            if (cs->gold < gold_cost) {
+                snprintf(res->text, sizeof(res->text), "%s\n" SJIS_NO_GOLD,
+                         me->full_name_sjis);
+                return false;
+            }
+            if (cs->rice < rice_cost) {
+                snprintf(res->text, sizeof(res->text), "%s\n" SJIS_NO_RICE,
+                         me->full_name_sjis);
+                return false;
+            }
+            int gain = 6 + me->politics / 15;
+            int before = cs->morale;
+            cs->gold -= gold_cost;
+            cs->rice -= rice_cost;
+            cs->morale += gain;
+            if (cs->morale > 300) cs->morale = 300;
+            res->d_gold = -gold_cost;
+            res->d_rice = -rice_cost;
+            res->d_morale = cs->morale - before;
+            snprintf(res->text, sizeof(res->text),
+                     "%s\n" SJIS_CHARITY " " SJIS_DONE "\n"
+                     SJIS_MORALE " +%d   " SJIS_GOLD " -%d   "
+                     SJIS_PROVISION " -%d",
+                     me->full_name_sjis, res->d_morale, gold_cost, rice_cost);
+            break;
+        }
+
+        case TURN_CMD_RECRUIT_OFFICER: {
+            int target = find_unaffiliated_officer(sc, castle_id);
+            if (target < 0) {
+                snprintf(res->text, sizeof(res->text), "%s\n" SJIS_NO_OFF,
+                         me->full_name_sjis);
+                return false;
+            }
+            const int cost = 600;
+            if (cs->gold < cost) {
+                snprintf(res->text, sizeof(res->text), "%s\n" SJIS_NO_GOLD,
+                         me->full_name_sjis);
+                return false;
+            }
+            ScenarioOfficer *to = &sc->officers[target];
+            int chance = 50 + me->charm / 2 + me->politics / 4 -
+                         to->loyalty / 2;
+            if (chance < 10) chance = 10;
+            if (chance > 95) chance = 95;
+            bool ok = ((int)(turn_rng(&rng) % 100u) < chance);
+            cs->gold -= cost;
+            res->d_gold = -cost;
+            if (ok) {
+                to->faction_id = faction_id;
+                to->castle_id = castle_id;
+                to->loyalty = 60;
+                snprintf(res->text, sizeof(res->text),
+                         "%s\n" SJIS_APPOINT " " SJIS_DONE "\n%s"
+                         SJIS_GOLD " -%d",
+                         me->full_name_sjis, to->full_name_sjis, cost);
+            } else {
+                to->loyalty += 5;
+                if (to->loyalty > 100) to->loyalty = 100;
+                snprintf(res->text, sizeof(res->text),
+                         "%s\n" SJIS_APPOINT " " SJIS_FAIL "\n%s",
+                         me->full_name_sjis, to->full_name_sjis);
+            }
+            break;
+        }
+
+        case TURN_CMD_REWARD: {
+            int target = -1;
+            int best = 101;
+            for (int i = 0; i < sc->num_officers; i++) {
+                const ScenarioOfficer *o = &sc->officers[i];
+                if (!officer_serves_at(o, faction_id, castle_id)) continue;
+                if (o->loyalty < best) {
+                    best = o->loyalty;
+                    target = i;
+                }
+            }
+            if (target < 0) {
+                snprintf(res->text, sizeof(res->text), "%s\n" SJIS_NO_OFF,
+                         me->full_name_sjis);
+                return false;
+            }
+            const int cost = 250;
+            if (cs->gold < cost) {
+                snprintf(res->text, sizeof(res->text), "%s\n" SJIS_NO_GOLD,
+                         me->full_name_sjis);
+                return false;
+            }
+            ScenarioOfficer *to = &sc->officers[target];
+            int gain = 8 + me->charm / 20;
+            int before = to->loyalty;
+            to->loyalty += gain;
+            if (to->loyalty > 100) to->loyalty = 100;
+            cs->gold -= cost;
+            res->d_gold = -cost;
+            snprintf(res->text, sizeof(res->text),
+                     "%s\n" SJIS_REWARD " " SJIS_DONE "\n%s  "
+                     "\x92\x89\x90\xbd %d -> %d   " SJIS_GOLD " -%d",
+                     me->full_name_sjis, to->full_name_sjis, before,
+                     to->loyalty, cost);
+            break;
+        }
+
+        case TURN_CMD_DIPLOMACY: {
+            int target = -1;
+            int target_faction = -1;
+            int best = 101;
+            const ScenarioCastle *from = &sc->castles[castle_id];
+            for (int k = 0; k < from->num_conns; k++) {
+                int cc = from->conns[k];
+                if (cc < 0 || cc >= sc->num_castles) continue;
+                int cf = sc->castles[cc].faction_id;
+                if (cf < 0 || cf == faction_id) continue;
+                int rel = turn_relation(ts, faction_id, cf);
+                if (rel < best) {
+                    best = rel;
+                    target = cc;
+                    target_faction = cf;
+                }
+            }
+            if (target < 0 || target_faction < 0) {
+                snprintf(res->text, sizeof(res->text), "%s\n" SJIS_NO_NEIGH,
+                         me->full_name_sjis);
+                return false;
+            }
+            const int cost = 400;
+            if (cs->gold < cost) {
+                snprintf(res->text, sizeof(res->text), "%s\n" SJIS_NO_GOLD,
+                         me->full_name_sjis);
+                return false;
+            }
+            int gain = 10 + me->politics / 10;
+            int rel = turn_relation(ts, faction_id, target_faction) + gain;
+            if (rel > 100) rel = 100;
+            turn_set_relation(ts, faction_id, target_faction, rel);
+            cs->gold -= cost;
+            res->d_gold = -cost;
+            snprintf(res->text, sizeof(res->text),
+                     "%s\n" SJIS_DIPLOMACY " " SJIS_DONE "\n%s  "
+                     "\x90\x65\x90\x6d\x90\xd7 %d%s",
+                     me->full_name_sjis, sc->castles[target].name_sjis, rel,
+                     (rel >= 80) ? "  " SJIS_TRUCE : "");
+            break;
+        }
+
+        case TURN_CMD_COURT: {
+            const int cost = 600;
+            if (cs->gold < cost) {
+                snprintf(res->text, sizeof(res->text), "%s\n" SJIS_NO_GOLD,
+                         me->full_name_sjis);
+                return false;
+            }
+            cs->gold -= cost;
+            res->d_gold = -cost;
+            ts->prestige += 30 + me->politics / 2;
+            int rank = ts->prestige / 100;
+            if (rank > 5) rank = 5;
+            ts->court_rank = rank;
+
+            int boost = 0;
+            for (int i = 0; i < sc->num_castles; i++) {
+                if (sc->castles[i].faction_id != faction_id) continue;
+                sc->castles[i].morale += 2;
+                if (sc->castles[i].morale > 300) sc->castles[i].morale = 300;
+                boost++;
+            }
+            snprintf(res->text, sizeof(res->text),
+                     "%s\n" SJIS_COURT " " SJIS_DONE "\n"
+                     "\x95\x4c\x96\x59 %d  \x88\xca\x88\xca %d  "
+                     SJIS_MORALE " +2 x%d",
+                     me->full_name_sjis, ts->prestige, ts->court_rank, boost);
+            break;
+        }
+
+        case TURN_CMD_ENTICE: {
+            int target_castle = -1, target_faction = -1;
+            int target = find_entice_target(sc, castle_id, faction_id,
+                                            &target_castle, &target_faction);
+            if (target < 0) {
+                snprintf(res->text, sizeof(res->text), "%s\n" SJIS_NO_OFF,
+                         me->full_name_sjis);
+                return false;
+            }
+            const int cost = 500;
+            if (cs->gold < cost) {
+                snprintf(res->text, sizeof(res->text), "%s\n" SJIS_NO_GOLD,
+                         me->full_name_sjis);
+                return false;
+            }
+            ScenarioOfficer *to = &sc->officers[target];
+            int chance = 35 + me->intel * 2 - to->loyalty;
+            if (chance < 5) chance = 5;
+            if (chance > 95) chance = 95;
+            bool ok = ((int)(turn_rng(&rng) % 100u) < chance);
+            cs->gold -= cost;
+            res->d_gold = -cost;
+            if (ok) {
+                to->faction_id = faction_id;
+                to->castle_id = castle_id;
+                to->loyalty = 55;
+                snprintf(res->text, sizeof(res->text),
+                         "%s\n" SJIS_ENTICE " " SJIS_DONE "\n%s  ->  %s",
+                         me->full_name_sjis, to->full_name_sjis,
+                         cs->name_sjis);
+            } else {
+                to->loyalty += 3;
+                if (to->loyalty > 100) to->loyalty = 100;
+                snprintf(res->text, sizeof(res->text),
+                         "%s\n" SJIS_ENTICE " " SJIS_FAIL "\n%s",
+                         me->full_name_sjis, to->full_name_sjis);
+            }
+            break;
+        }
+
+        case TURN_CMD_RUMOR: {
+            int target = find_adjacent_enemy(sc, castle_id, faction_id);
+            if (target < 0) {
+                snprintf(res->text, sizeof(res->text), "%s\n" SJIS_NO_NEIGH,
+                         me->full_name_sjis);
+                return false;
+            }
+            const int cost = 300;
+            if (cs->gold < cost) {
+                snprintf(res->text, sizeof(res->text), "%s\n" SJIS_NO_GOLD,
+                         me->full_name_sjis);
+                return false;
+            }
+            ScenarioCastle *tc = &sc->castles[target];
+            int morale_loss = 8 + me->intel / 12;
+            int troop_loss = tc->troops / 10;
+            if (troop_loss < 10) troop_loss = 10;
+            if (troop_loss > 150) troop_loss = 150;
+            if (troop_loss > tc->troops) troop_loss = tc->troops;
+            int before = tc->morale;
+            tc->morale -= morale_loss;
+            if (tc->morale < 0) tc->morale = 0;
+            tc->troops -= troop_loss;
+            cs->gold -= cost;
+            res->d_gold = -cost;
+            res->d_troops = -troop_loss;
+            res->d_morale = tc->morale - before;
+            snprintf(res->text, sizeof(res->text),
+                     "%s\n" SJIS_RUMOR " " SJIS_DONE "\n%s  "
+                     SJIS_MORALE " %d   " SJIS_TROOPS " -%d",
+                     me->full_name_sjis, tc->name_sjis, res->d_morale,
+                     troop_loss);
+            break;
+        }
+
+        default:
+            return false;
+    }
+
+    ts->acted[oid] = 1;
+    res->ok = true;
+    return true;
+}
+
 // Month advance + per-castle settlement. Shared with TURN_CMD_END.
 bool turn_end(TurnState *ts, Scenario *sc, TurnResult *res) {
     if (!ts || !sc || !res) return false;
@@ -347,8 +800,24 @@ bool turn_run_command_officer(TurnState *ts, Scenario *sc, int castle_id,
         return true;
     }
 
-    return run_domestic_command(ts, sc, ts->player_faction, castle_id,
-                                cmd, officer_id, res);
+    switch (cmd) {
+        case TURN_CMD_DEVELOP:
+        case TURN_CMD_RECRUIT:
+        case TURN_CMD_TAX:
+            return run_domestic_command(ts, sc, ts->player_faction, castle_id,
+                                        cmd, officer_id, res);
+        case TURN_CMD_CHARITY:
+        case TURN_CMD_RECRUIT_OFFICER:
+        case TURN_CMD_REWARD:
+        case TURN_CMD_DIPLOMACY:
+        case TURN_CMD_COURT:
+        case TURN_CMD_ENTICE:
+        case TURN_CMD_RUMOR:
+            return run_council_command(ts, sc, ts->player_faction, castle_id,
+                                       cmd, officer_id, res);
+        default:
+            return false;
+    }
 }
 
 // Domestic command for an arbitrary faction (non-player AI). Rejects the

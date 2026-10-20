@@ -29,6 +29,9 @@
 //     int32_t  turn_year, turn_month
 //     uint8_t  acted[MAX_OFFICERS]
 //     TreasureState treasures        (version 2, 子任务 9)
+//     int32_t  prestige              (version 3, 子任务 14)
+//     int32_t  court_rank
+//     uint8_t  relations[15][15]     (version 3)
 //
 // Loading restores every mutable field, so a reloaded game is byte-for-byte
 // identical to the saved one. The static metadata (title_sjis, faction defs,
@@ -36,7 +39,7 @@
 // ---------------------------------------------------------------------------
 
 #define SAVE_MAGIC    "YPHZSNAP"
-#define SAVE_VERSION  2u
+#define SAVE_VERSION  3u
 
 // Write the current game to `path`. Returns false on I/O failure.
 bool save_game(const char *path, const Scenario *sc, const TurnState *ts);

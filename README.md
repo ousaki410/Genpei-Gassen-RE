@@ -315,7 +315,20 @@ SDL_VIDEODRIVER=dummy ./bin/yphz_engine --preview-npk Opendat.gp 10 \
 SDL_VIDEODRIVER=dummy ./bin/yphz_engine --preview-raw Maincmd.gp \
     --raw-width 96 --frames 2 --screenshot /tmp/maincmd96.bmp
 
-# 一键无头回归（60 项）
+# 子任务 14：HUD 工具栏 / 新手引导 / 快速试验台
+SDL_VIDEODRIVER=dummy ./bin/yphz_engine --map -c 30 --click 40,368@1 --frames 2 \
+    --screenshot /tmp/council.bmp                 # 点击工具栏 [政庁] 打开评定额
+SDL_VIDEODRIVER=dummy ./bin/yphz_engine --guide --map -c 30 --frames 2 \
+    --screenshot /tmp/guide.bmp                   # 六页新手引导 + 武将立绘
+SDL_VIDEODRIVER=dummy ./bin/yphz_engine --testbench --map -c 30 --frames 2 \
+    --screenshot /tmp/testbench.bmp               # F2 试验台（四类分页）
+./bin/yphz_engine --testbench-action max -c 30 --frames 1        # 金/兵糧/兵力 MAX
+./bin/yphz_engine --testbench-action event0 --frames 1           # 历史事件 0
+./bin/yphz_engine --testbench-action movie-open --frames 2       # Opendat 52 帧
+./bin/yphz_engine --testbench-action scenario2 --frames 1        # 即时切换剧本
+./bin/yphz_engine --testbench-action faction1 --frames 1         # 即时切换势力
+
+# 一键无头回归（70 项）
 tools/run_regression.sh
 ```
 
@@ -329,9 +342,14 @@ tools/run_regression.sh
 | 大名选择 | `↑↓` / 数字 / `ENTER` / `ESC` | 选择势力 / 确认并开始 / 返回剧本选择 |
 | 通用 | `F5` | 保存到存档槽（默认 `Savedata.sav`，可用 `--save-slot` 指定） |
 | 通用 | `F9` | 从存档槽读取并恢复游戏状态 |
+| 通用 | `F1` | 开/关**新手引导**（六页：目的/内政/人事/外交/计略/合战） |
+| 通用 | `F2` | 开/关**快速试验台**（内政外交 / 合战一骑讨 / 历史动画 / 剧本势力） |
+| 试验台 | `←`/`→` / `↑`/`↓` / `ENTER` / `ESC` | 切换分类 / 选择项目 / 执行 / 关闭 |
+| 引导 | `←`/`→` / `ENTER` / `ESC` / 左键 | 上一页 / 下一页 / 关闭 |
 | 通用 | `L` | 打开/关闭 NPK016 画廊（Logo / 事件 CG / 家宝 / 合战景等 8 个包） |
 | 通用 | `I` | 直接打开家宝图标画廊（`Mainitem.gp`，19 × 64×64） |
 | 地图 | `B` | 开/关**家宝面板**（19 件 64×64 图标 + 归属边框 + 名称/加成/持有势力） |
+| 地图 | 画面底部工具栏 | `[政庁]` `[地図]` `[家宝 B]` `[武将]` `[保存 F5]` `[読込 F9]` `[案内 F1]` `[試験 F2]` 全部可点击 |
 | 地图·家宝面板 | `←`/`→`/`↑`/`↓` / 左键 | 移动选择光标（5×4 网格） |
 | 地图·家宝面板 | `G` | 把选中的己方家宝**赏赐**给当前城池城主（需己方城池且城主在位） |
 | 地图·家宝面板 | `B` / `ESC` / 右键 | 关闭面板 |

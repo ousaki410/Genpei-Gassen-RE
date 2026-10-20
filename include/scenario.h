@@ -7,6 +7,7 @@
 #define MAX_OFFICERS 401
 #define MAX_CASTLES  39
 #define MAX_SCENARIOS 4
+#define MAX_FACTIONS 15
 
 // ---------------------------------------------------------------------------
 // DOS / PC-98 16-bit compact memory layout: byte-level packing, no compiler

@@ -38,6 +38,8 @@ typedef enum {
     YPHZ_KEY_I,
     YPHZ_KEY_B,
     YPHZ_KEY_G,
+    YPHZ_KEY_F1,
+    YPHZ_KEY_F2,
     YPHZ_KEY_F5,
     YPHZ_KEY_F9,
     YPHZ_KEY_LEFTBRACKET,
