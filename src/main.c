@@ -908,8 +908,10 @@ static bool battle_enter(Scenario *sc, int from, int to, int officer,
         char unit_path[512];
         snprintf(unit_path, sizeof(unit_path), "%s/Hunitpat.gp", s_asset_dir);
         if (kassen_units_load(unit_path)) {
-            printf("[+] Unit patterns: %d tiles of %dx%d (Hunitpat.gp)\n",
-                   kassen_units_loaded(), KASSEN_UNIT_TILE_W, KASSEN_UNIT_TILE_H);
+            printf("[+] Unit patterns: %d rows of %d px, sprites %dx%d "
+                   "(Hunitpat.gp)\n",
+                   kassen_units_loaded(), RAW_SPRITE_WIDTH,
+                   KASSEN_UNIT_TILE_W, KASSEN_UNIT_TILE_H);
         } else {
             kassen_units_load("Hunitpat.gp");
         }
@@ -1920,16 +1922,21 @@ int main(int argc, char *argv[]) {
             if (rdata && rsize > 0 &&
                 fread(rdata, 1, (size_t)rsize, rf) == (size_t)rsize) {
                 RawSprite rs;
-                // Hunitpat.gp -> 16x16 tiles, Mainobj.gp -> 208x236 sheet.
-                const int tw = 16, th = 16;
+                // The raw sheets use the game's native planar order with a
+                // 24 px scanline (12 byte stride); --preview-raw <n> shows
+                // the n-th unit sprite (24x32) of the sheet.
                 bool ok = false;
                 if (preview_raw_index > 0) {
-                    const size_t tile_bytes = 128;
-                    ok = (size_t)rsize >= (size_t)preview_raw_index * tile_bytes + tile_bytes &&
-                         raw_sprite_decode_4plane(rdata + (size_t)preview_raw_index * tile_bytes,
-                                                  tile_bytes, tw, th, &rs);
+                    const int top = (preview_raw_index - 1) * RAW_SPRITE_UNIT_PITCH;
+                    const size_t off = (size_t)top * RAW_SPRITE_ROW_BYTES;
+                    ok = off + (size_t)RAW_SPRITE_ROW_BYTES * KASSEN_UNIT_TILE_H <= (size_t)rsize &&
+                         raw_sprite_decode_4plane(rdata + off,
+                                                  (size_t)RAW_SPRITE_ROW_BYTES * KASSEN_UNIT_TILE_H,
+                                                  RAW_SPRITE_WIDTH, KASSEN_UNIT_TILE_H, &rs);
                 } else {
-                    ok = raw_sprite_decode_4plane(rdata, (size_t)rsize, 208, 236, &rs);
+                    const uint16_t rows = (uint16_t)(rsize / RAW_SPRITE_ROW_BYTES);
+                    ok = raw_sprite_decode_4plane(rdata, (size_t)rsize,
+                                                  RAW_SPRITE_WIDTH, rows, &rs);
                 }
                 if (ok) {
                     preview_raw_img.width = rs.width;

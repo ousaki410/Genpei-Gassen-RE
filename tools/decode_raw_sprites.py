@@ -1,29 +1,35 @@
 #!/usr/bin/env python3
-"""Decode the raw PC-98 4-plane sprite banks of Genpei Kassen.
+"""Decode the raw PC-98 4-plane battle sheets of Genpei Kassen.
 
-子任务 10 part 2.  The battle assets that are *not* wrapped in NPK016
-containers store their pixels as raw 4-plane bitmaps:
+子任务 11.  The raw battle assets (Hunitpat.gp / Hchikei.gp / Mainobj.gp) are
+not NPK016 containers: they store their pixels directly in the game's native
+planar order, the same one the NPK/NUP4 decoder in decompress.c produces:
 
   * a scanline is a sequence of 8-pixel groups;
   * each group is 4 bytes, one byte per colour plane (plane 0 = LSB);
   * inside a byte, bit 7 is the leftmost pixel;
   * a pixel's colour index is  b0 | b1<<1 | b2<<2 | b3<<3.
 
-Sizes that follow from that layout:
+The solved geometry (see tools/solve_raw_layout.py for the analysis):
 
-  Hunitpat.gp  151936 B = 1187 x 128 B -> 1187 tiles of 16x16
-  Hchikei.gp    10060 B = 76 + 78 x 128 B (or 100x100 tile ids + 60 B)
-  Mainobj.gp    24544 B = 104 x 236 B   -> 208x236 sheet
+  Hunitpat.gp  151936 B  stride 12 B -> 24 px wide, 12661 rows.
+                             Unit sprites are 24x32 px on a 36-row pitch;
+                             the twelve sprite types are the factions.
+  Mainobj.gp    24544 B  stride 12 B -> 24 px wide, 2045 rows.
+                             The same 24x32 unit sprites plus terrain art.
+  Hchikei.gp    10060 B  not a bitmap: a 100x100 grid of one-byte terrain
+                             tile ids (13 distinct ids) + a 60 byte table.
 
 Usage:
-    python3 tools/decode_raw_sprites.py                 # report + previews
-    python3 tools/decode_raw_sprites.py --out /tmp/x    # preview directory
-    python3 tools/decode_raw_sprites.py --tile 3        # dump one tile
+    python3 tools/decode_raw_sprites.py                  # report + previews
+    python3 tools/decode_raw_sprites.py --tile 3         # one unit sprite
+    python3 tools/decode_raw_sprites.py --out /tmp/x     # preview directory
 """
 
 import argparse
 import os
 import sys
+from collections import Counter
 
 try:
     from PIL import Image
@@ -34,39 +40,42 @@ except ImportError:
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 DATA = os.path.join(ROOT, "games", "yphz")
 
+# --- solved geometry --------------------------------------------------------
+WIDTH = 24            # pixels per scanline
+ROW_BYTES = 12        # 3 groups x 4 plane bytes
+UNIT_W = 24           # unit sprite width
+UNIT_H = 32           # unit sprite height
+UNIT_PITCH = 36       # rows between sprite origins
+
 # PC-98 16 colour fallback palette (the engine loads Mainpal.pld at runtime).
 PALETTE = [
-    (0x00, 0x00, 0x00), (0x00, 0x00, 0x5A), (0x00, 0x5A, 0x00), (0x00, 0x5A, 0x5A),
-    (0x5A, 0x00, 0x00), (0x5A, 0x00, 0x5A), (0x5A, 0x5A, 0x00), (0x5A, 0x5A, 0x5A),
-    (0x80, 0x80, 0x80), (0x00, 0x00, 0xFF), (0x00, 0xFF, 0x00), (0x00, 0xFF, 0xFF),
-    (0xFF, 0x00, 0x00), (0xFF, 0x00, 0xFF), (0xFF, 0xFF, 0x00), (0xFF, 0xFF, 0xFF),
+    (0x00, 0x00, 0x00), (0x11, 0x44, 0xAA), (0xDD, 0x44, 0x00), (0xEE, 0x88, 0x55),
+    (0x00, 0x99, 0x33), (0x77, 0xBB, 0xBB), (0xFF, 0xBB, 0x44), (0xFF, 0xFF, 0xDD),
+    (0x33, 0x22, 0x00), (0x33, 0x44, 0x00), (0x99, 0x55, 0x33), (0xCC, 0x99, 0x44),
+    (0x77, 0x88, 0x55), (0x11, 0x22, 0x44), (0xAA, 0xAA, 0xBB), (0xAA, 0xBB, 0x44),
 ]
 
 
 def decode_4plane(data, width, height, offset=0):
-    """Decode a raw 4-plane bitmap into a list of rows of colour indices.
-
-    Layout (per row): [ plane 0 ][ plane 1 ][ plane 2 ][ plane 3 ], each
-    segment being ceil(width/8) bytes, bit 7 = leftmost pixel.
-    """
-    plane_bytes = (width + 7) // 8
-    row_bytes = plane_bytes * 4
+    """Decode a raw 4-plane bitmap into a list of rows of colour indices."""
+    groups = (width + 7) // 8
+    row_bytes = groups * 4
     rows = []
     pos = offset
     for _ in range(height):
         row = [0] * width
-        for plane in range(4):
-            bits = data[pos:pos + plane_bytes]
-            pos += plane_bytes
-            for g, byte in enumerate(bits):
-                if byte == 0:
-                    continue
-                for bit in range(8):
-                    x = g * 8 + bit
-                    if x >= width:
-                        break
-                    if (byte >> (7 - bit)) & 1:
-                        row[x] |= 1 << plane
+        for g in range(groups):
+            b0, b1, b2, b3 = data[pos], data[pos + 1], data[pos + 2], data[pos + 3]
+            pos += 4
+            for bit in range(8):
+                x = g * 8 + bit
+                if x >= width:
+                    break
+                shift = 7 - bit
+                c = ((b0 >> shift) & 1) | (((b1 >> shift) & 1) << 1) \
+                    | (((b2 >> shift) & 1) << 2) | (((b3 >> shift) & 1) << 3)
+                if c:
+                    row[x] = c
         rows.append(row)
     return rows, pos
 
@@ -84,38 +93,37 @@ def to_image(rows, scale=1):
     return img
 
 
-def report(name, size, out_dir):
-    path = os.path.join(DATA, name + ".gp")
+def byte_stride(data, max_stride=260):
+    """Row stride: the lag with the smallest mean absolute byte difference."""
+    best = []
+    n = len(data)
+    for s in range(2, min(max_stride, n)):
+        diff = sum(abs(a - b) for a, b in zip(data[:-s], data[s:])) / (n - s)
+        best.append((diff, s))
+    best.sort()
+    return best
+
+
+def report(name, out_dir):
+    path = os.path.join(DATA, name)
     if not os.path.exists(path):
-        print("[ERROR] missing %s" % path, file=sys.stderr)
+        print("[SKIP] %s not found" % name)
         return False
     data = open(path, "rb").read()
-    print("[INFO] %s.gp: %d bytes" % (name, len(data)))
+    print("[INFO] %s: %d bytes" % (name, len(data)))
+    print("       head: %s" % data[:24].hex(" "))
 
-    if name == "Hunitpat":
-        tw, th = 16, 16
-        tile_bytes = tw * th // 2
-        count = len(data) // tile_bytes
-        print("       -> %d tiles of %dx%d (%d B each), %d B left over"
-              % (count, tw, th, tile_bytes, len(data) % tile_bytes))
-        # contact sheet of the first tiles
-        cols, rows_n, scale = 16, 4, 3
-        sheet = Image.new("RGB", (cols * tw * scale, rows_n * th * scale))
-        for i in range(min(count, cols * rows_n)):
-            rows, _ = decode_4plane(data, tw, th, i * tile_bytes)
-            tile = to_image(rows, scale)
-            sheet.paste(tile, ((i % cols) * tw * scale, (i // cols) * th * scale))
-        out = os.path.join(out_dir, "Hunitpat_sheet.png")
-        sheet.save(out)
-        print("       wrote %s" % out)
-    elif name == "Hchikei":
-        # Two readings fit the size: a 76 B header + 78 tiles of 128 B, and a
-        # 100x100 grid of one byte tile ids + a 60 B formation table.
-        print("       -> 100x100 tile-id grid + 60 B trailer (13 distinct ids)")
+    strides = byte_stride(data)
+    print("       byte autocorrelation: " +
+          "  ".join("s=%d:%.2f" % (s, m) for m, s in strides[:4]))
+
+    if name == "Hchikei.gp":
         ids = data[:10000]
         distinct = sorted(set(ids))
-        print("       tile ids: %d distinct, max %d" % (len(distinct), max(ids)))
-        print("       trailer (60 B): %s" % data[10000:].hex(" "))
+        print("       -> 100x100 tile-id grid (%d distinct ids, max %d) "
+              "+ %d byte formation table" % (len(distinct), max(ids),
+                                            len(data) - 10000))
+        print("       trailer: %s" % data[10000:].hex(" "))
         grid = Image.new("RGB", (100, 100))
         px = grid.load()
         for y in range(100):
@@ -124,15 +132,33 @@ def report(name, size, out_dir):
         out = os.path.join(out_dir, "Hchikei_grid.png")
         grid.resize((400, 400), Image.NEAREST).save(out)
         print("       wrote %s" % out)
-    elif name == "Mainobj":
-        w, h = 208, 236
-        row_bytes = 4 * ((w + 7) // 8)
-        print("       -> %dx%d sheet, %d B/row x %d rows = %d B"
-              % (w, h, row_bytes, h, row_bytes * h))
-        rows, _ = decode_4plane(data, w, h)
-        out = os.path.join(out_dir, "Mainobj_sheet.png")
-        to_image(rows, 2).save(out)
-        print("       wrote %s" % out)
+        return True
+
+    rows = len(data) // ROW_BYTES
+    print("       -> %d px wide, %d rows (stride %d B)" % (WIDTH, rows, ROW_BYTES))
+    sheet, _ = decode_4plane(data, WIDTH, rows)
+    types = rows // UNIT_PITCH
+    print("       -> %d unit sprite slots of %dx%d px on a %d-row pitch"
+          % (types, UNIT_W, UNIT_H, UNIT_PITCH))
+
+    # Contact sheet of the unit sprites.
+    cols = 8
+    cell = Image.new("RGB", (cols * UNIT_W, 4 * UNIT_H), (0, 0, 0))
+    for i in range(min(types, cols * 4)):
+        top = i * UNIT_PITCH
+        sub = sheet[top:top + UNIT_H]
+        if len(sub) < UNIT_H:
+            break
+        im = to_image(sub, 1)
+        cell.paste(im, ((i % cols) * UNIT_W, (i // cols) * UNIT_H))
+    out = os.path.join(out_dir, "%s_units.png" % name.replace(".gp", ""))
+    cell.resize((cols * UNIT_W * 3, 4 * UNIT_H * 3), Image.NEAREST).save(out)
+    print("       wrote %s" % out)
+
+    # Full sheet preview.
+    out = os.path.join(out_dir, "%s_sheet.png" % name.replace(".gp", ""))
+    to_image(sheet[:512], 2).save(out)
+    print("       wrote %s" % out)
     return True
 
 
@@ -140,24 +166,25 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="/tmp/yphz_raw_sprites",
                     help="preview output directory")
-    ap.add_argument("--tile", type=int, default=-1,
-                    help="dump a single Hunitpat tile as PNG")
+    ap.add_argument("--tile", type=int, default=0,
+                    help="dump the n-th unit sprite (1-based) as PNG")
+    ap.add_argument("--files", nargs="*",
+                    default=["Hunitpat.gp", "Mainobj.gp", "Hchikei.gp"])
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
 
-    if args.tile >= 0:
+    if args.tile > 0:
         data = open(os.path.join(DATA, "Hunitpat.gp"), "rb").read()
-        rows, _ = decode_4plane(data, 16, 16, args.tile * 128)
-        out = os.path.join(args.out, "Hunitpat_tile%03d.png" % args.tile)
+        top = (args.tile - 1) * UNIT_PITCH
+        rows, _ = decode_4plane(data, WIDTH, UNIT_H, top * ROW_BYTES)
+        out = os.path.join(args.out, "Hunitpat_unit%02d.png" % args.tile)
         to_image(rows, 8).save(out)
         print("[INFO] wrote %s" % out)
         return 0
 
     ok = True
-    for name in ("Hunitpat", "Hchikei", "Mainobj"):
-        if not report(name, os.path.getsize(os.path.join(DATA, name + ".gp"))
-                      if os.path.exists(os.path.join(DATA, name + ".gp")) else 0,
-                      args.out):
+    for name in args.files:
+        if not report(name, args.out):
             ok = False
     return 0 if ok else 1
 

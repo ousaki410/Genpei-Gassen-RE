@@ -2,6 +2,7 @@
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "hal_video.h"
@@ -571,38 +572,38 @@ bool kassen_is_unified(const Scenario *sc) {
 // for each side; the number of sprites scales with the troop count.
 // ---------------------------------------------------------------------------
 
-#define UNIT_COLS        6      // sprites per row
-#define UNIT_ROWS        4      // rows per side
-#define UNIT_STEP        17     // pixel spacing between sprites
-#define UNIT_ATK_X       146    // left edge of the attacking formation
-#define UNIT_DEF_X       478    // left edge of the defending formation
-#define UNIT_TOP_Y       56
+#define UNIT_COLS        4      // sprites per row
+#define UNIT_ROWS        3      // rows per side
+#define UNIT_STEP        26     // pixel spacing between sprites
+#define UNIT_ATK_X       150    // left edge of the attacking formation
+#define UNIT_DEF_X       466    // left edge of the defending formation
+#define UNIT_TOP_Y       60
 #define UNIT_TROOPS_PER  50     // one sprite per this many troops
 
-static RawSpriteBank s_unit_bank;
-static bool          s_unit_bank_loaded;
+static RawSprite s_unit_sheet;     // the whole 24 px wide sheet
+static bool      s_unit_sheet_ok;
 
 bool kassen_units_load(const char *path) {
     kassen_units_free();
     if (!path) return false;
-    const int n = raw_sprite_load_tile_bank(path, KASSEN_UNIT_TILE_W,
-                                             KASSEN_UNIT_TILE_H,
-                                             RAW_SPRITE_MAX_TILES,
-                                             &s_unit_bank);
-    if (n <= 0) return false;
-    s_unit_bank_loaded = true;
+    if (!raw_sprite_load_sheet(path, &s_unit_sheet))
+        return false;
+    s_unit_sheet_ok = true;
     return true;
 }
 
 void kassen_units_free(void) {
-    if (s_unit_bank_loaded) {
-        raw_sprite_free_bank(&s_unit_bank);
-        s_unit_bank_loaded = false;
+    if (s_unit_sheet_ok) {
+        free(s_unit_sheet.pixels);
+        s_unit_sheet.pixels = NULL;
+        s_unit_sheet.width = 0;
+        s_unit_sheet.height = 0;
+        s_unit_sheet_ok = false;
     }
 }
 
 int kassen_units_loaded(void) {
-    return s_unit_bank_loaded ? s_unit_bank.count : 0;
+    return s_unit_sheet_ok ? (int)s_unit_sheet.height : 0;
 }
 
 int kassen_unit_formation(int troops, bool attacker, int officer,
@@ -616,7 +617,7 @@ int kassen_unit_formation(int troops, bool attacker, int officer,
     if (count > KASSEN_MAX_UNITS) count = KASSEN_MAX_UNITS;
     if (count > max_out) count = max_out;
 
-    const int bank = kassen_units_loaded();
+    const int rows = kassen_units_loaded();
     const int base_x = attacker ? UNIT_ATK_X : UNIT_DEF_X;
 
     for (int i = 0; i < count; i++) {
@@ -625,44 +626,55 @@ int kassen_unit_formation(int troops, bool attacker, int officer,
         out[i].x = base_x + col * UNIT_STEP;
         out[i].y = UNIT_TOP_Y + row * UNIT_STEP;
         out[i].attacker = attacker;
-        // Deterministic pattern choice: the commanding officer picks the
-        // family of unit art, the slot inside that family varies the tile.
-        int tile = 0;
-        if (bank > 0) {
-            const int seed = attacker ? (officer * 3 + 1) : (officer * 5 + 2);
-            int family = seed % (bank > 7 ? bank - 7 : bank);
-            if (family < 0) family += bank;
-            tile = family + (i % 7);
-            if (tile >= bank) tile -= bank;
+        // The sheet holds one 24x32 unit sprite per faction (twelve in
+        // total, on a 36-row pitch), so the commander picks the faction art
+        // and the formation slot varies the frame.
+        int top = 0;
+        if (rows > 0) {
+            const int types = rows / RAW_SPRITE_UNIT_PITCH;
+            const int n_types = (types > 0) ? types : 1;
+            int type = attacker ? (officer % n_types)
+                                : ((officer * 5 + 7) % n_types);
+            if (type < 0) type += n_types;
+            top = type * RAW_SPRITE_UNIT_PITCH;
         }
-        out[i].tile = tile;
+        out[i].tile = top;
     }
     return count;
 }
 
+// Extract the 24x32 unit sprite that starts at row `top` of the sheet.
+static const uint8_t *unit_sprite_pixels(int top) {
+    if (!s_unit_sheet_ok || !s_unit_sheet.pixels)
+        return NULL;
+    if (top < 0 || top + KASSEN_UNIT_TILE_H > (int)s_unit_sheet.height)
+        return NULL;
+    return s_unit_sheet.pixels + (size_t)top * s_unit_sheet.width;
+}
+
 void kassen_units_draw(int att_troops, int def_troops,
                        int att_officer, int def_officer) {
-    if (!s_unit_bank_loaded || s_unit_bank.count <= 0) return;
+    if (!s_unit_sheet_ok || !s_unit_sheet.pixels) return;
 
     KassenUnitSprite sprites[KASSEN_MAX_UNITS];
 
     int n = kassen_unit_formation(att_troops, true, att_officer,
                                   sprites, KASSEN_MAX_UNITS);
     for (int i = 0; i < n; i++) {
-        const RawSprite *t = &s_unit_bank.tiles[sprites[i].tile];
-        if (!t->pixels) continue;
+        const uint8_t *px = unit_sprite_pixels(sprites[i].tile);
+        if (!px) continue;
         hal_video_blit_transparent(sprites[i].x, sprites[i].y,
-                                   t->width, t->height, t->pixels,
-                                   t->width, 0);
+                                   KASSEN_UNIT_TILE_W, KASSEN_UNIT_TILE_H,
+                                   px, KASSEN_UNIT_TILE_W, 0);
     }
 
     n = kassen_unit_formation(def_troops, false, def_officer,
                                sprites, KASSEN_MAX_UNITS);
     for (int i = 0; i < n; i++) {
-        const RawSprite *t = &s_unit_bank.tiles[sprites[i].tile];
-        if (!t->pixels) continue;
+        const uint8_t *px = unit_sprite_pixels(sprites[i].tile);
+        if (!px) continue;
         hal_video_blit_transparent(sprites[i].x, sprites[i].y,
-                                   t->width, t->height, t->pixels,
-                                   t->width, 0);
+                                   KASSEN_UNIT_TILE_W, KASSEN_UNIT_TILE_H,
+                                   px, KASSEN_UNIT_TILE_W, 0);
     }
 }

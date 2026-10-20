@@ -159,10 +159,22 @@ else
     printf 'SKIP  DOS save slot round-trip (no Savedata.gp)\n'
 fi
 
-# 裸 4 位平面精灵：Hunitpat.gp = 1187 块 16x16，Mainobj.gp = 208x236
-check "raw 4-plane unit bank"  "Unit patterns: 1187 tiles of 16x16" --attack 30,29 --frames 2
-check "raw 4-plane preview"   "Raw Hunitpat.gp: 16x16 \(4-plane\)" --preview-raw Hunitpat.gp 3 --frames 2
-check "raw 4-plane sheet"     "Raw Mainobj.gp: 208x236 \(4-plane\)" --preview-raw Mainobj.gp --frames 2
+# 裸 4 位平面精灵：24 px 扫描线（12 B 步长），单位精灵 24x32，36 行间距
+check "raw 4-plane unit bank"  "Unit patterns: 12661 rows of 24 px, sprites 24x32" --attack 30,29 --frames 2
+check "raw 4-plane preview"   "Raw Hunitpat.gp: 24x32 \(4-plane\)" --preview-raw Hunitpat.gp 3 --frames 2
+check "raw 4-plane sheet"     "Raw Mainobj.gp: 24x2045 \(4-plane\)" --preview-raw Mainobj.gp --frames 2
+
+# 布局求解器必须复现已解出的几何（24 px 步长 / chunk8 平面序）
+if python3 tools/solve_raw_layout.py --files Hunitpat.gp 2>&1 | grep -q "s=12:"; then
+    printf 'PASS  raw layout solver finds 12-byte stride\n'; pass=$((pass + 1))
+else
+    printf 'FAIL  raw layout solver stride\n'; fail=$((fail + 1))
+fi
+if python3 tools/decode_raw_sprites.py --out "$TMP/sprites" 2>&1 | grep -q "24 px wide, 12661 rows"; then
+    printf 'PASS  raw sprite decoder geometry\n'; pass=$((pass + 1))
+else
+    printf 'FAIL  raw sprite decoder geometry\n'; fail=$((fail + 1))
+fi
 
 echo "-------------------------------------------------------------------"
 printf 'TOTAL %d checks: %d passed, %d failed\n' "$((pass + fail))" "$pass" "$fail"

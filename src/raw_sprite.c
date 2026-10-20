@@ -1,30 +1,8 @@
 /*
- * raw_sprite.c — PC-98 4-plane raw bitmap decoder (subtask 10 part 2)
+ * raw_sprite.c — PC-98 4-plane raw bitmap decoder (子任务 11)
  *
- * On-disk layout of the raw battle sheets (Hunitpat.gp / Hchikei.gp /
- * Mainobj.gp).  They are *not* NPK016 containers: every scanline stores the
- * four colour planes of that line back to back.
- *
- *     row bytes = 4 * ceil(width / 8)
- *
- * and inside a row the four plane segments appear in plane order
- *
- *     [ plane 0 ][ plane 1 ][ plane 2 ][ plane 3 ]
- *
- * Each plane segment is ceil(width/8) bytes, one bit per pixel, bit 7 being
- * the leftmost pixel.  A pixel's colour index is
- *
- *     p0 | p1<<1 | p2<<2 | p3<<3
- *
- * which is the same index space (and the same 16-colour PC-98 palette) that
- * the NPK016 decoder in decompress.c produces.
- *
- * Sizes that follow from the layout:
- *
- *     Hunitpat.gp  151936 B = 128 B * 1187   -> 1187 tiles of 16x16
- *     Hchikei.gp    10060 B = 76 + 78 * 128 B -> 78 tiles of 16x16
- *     Mainobj.gp    24544 B = 104 B * 236     -> 208x236 sheet
- *                   (26 B per plane per row x 4 planes = 104 B per row)
+ * The on-disk layout and the solved geometry are documented in
+ * raw_sprite.h; tools/solve_raw_layout.py reproduces the analysis.
  */
 #include "raw_sprite.h"
 
@@ -39,8 +17,8 @@ bool raw_sprite_decode_4plane(const uint8_t *data, size_t data_len,
     if (!data || !out || width == 0 || height == 0)
         return false;
 
-    const uint16_t plane_bytes = (uint16_t)((width + 7) / 8);
-    const size_t   row_bytes = (size_t)plane_bytes * 4;
+    const uint16_t groups = (uint16_t)((width + 7) / 8);
+    const size_t   row_bytes = (size_t)groups * 4;
     if (data_len < row_bytes * height)
         return false;
 
@@ -57,19 +35,20 @@ bool raw_sprite_decode_4plane(const uint8_t *data, size_t data_len,
     for (uint16_t y = 0; y < height; y++) {
         const uint8_t *row = data + (size_t)y * row_bytes;
         uint8_t *dst = out->pixels + (size_t)y * width;
-        for (uint16_t plane = 0; plane < 4; plane++) {
-            const uint8_t *bits = row + (size_t)plane * plane_bytes;
-            for (uint16_t g = 0; g < plane_bytes; g++) {
-                const uint8_t byte = bits[g];
-                if (byte == 0)
-                    continue;
-                for (int bit = 0; bit < 8; bit++) {
-                    const uint16_t x = g * 8 + (uint16_t)bit;
-                    if (x >= width)
-                        break;
-                    if ((byte >> (7 - bit)) & 1)
-                        dst[x] |= (uint8_t)(1u << plane);
-                }
+        for (uint16_t g = 0; g < groups; g++) {
+            const uint8_t b0 = row[g * 4 + 0];
+            const uint8_t b1 = row[g * 4 + 1];
+            const uint8_t b2 = row[g * 4 + 2];
+            const uint8_t b3 = row[g * 4 + 3];
+            for (int bit = 0; bit < 8; bit++) {
+                const uint16_t x = g * 8 + (uint16_t)bit;
+                if (x >= width)
+                    break;
+                const int shift = 7 - bit;
+                dst[x] = (uint8_t)(((b0 >> shift) & 1) |
+                                   (((b1 >> shift) & 1) << 1) |
+                                   (((b2 >> shift) & 1) << 2) |
+                                   (((b3 >> shift) & 1) << 3));
             }
         }
     }
@@ -141,6 +120,44 @@ bool raw_sprite_load_tile_bank(const char *path, uint16_t tile_w, uint16_t tile_
                                                max_tiles, bank);
     free(data);
     return n > 0;
+}
+
+bool raw_sprite_load_sheet(const char *path, RawSprite *out)
+{
+    if (!path || !out)
+        return false;
+
+    FILE *fp = fopen(path, "rb");
+    if (!fp)
+        return false;
+    if (fseek(fp, 0, SEEK_END) != 0) {
+        fclose(fp);
+        return false;
+    }
+    const long size = ftell(fp);
+    if (size <= 0) {
+        fclose(fp);
+        return false;
+    }
+    rewind(fp);
+
+    uint8_t *data = (uint8_t *)malloc((size_t)size);
+    if (!data) {
+        fclose(fp);
+        return false;
+    }
+    const size_t got = fread(data, 1, (size_t)size, fp);
+    fclose(fp);
+    if (got != (size_t)size) {
+        free(data);
+        return false;
+    }
+
+    const uint16_t rows = (uint16_t)(size / RAW_SPRITE_ROW_BYTES);
+    const bool ok = raw_sprite_decode_4plane(data, (size_t)size,
+                                              RAW_SPRITE_WIDTH, rows, out);
+    free(data);
+    return ok;
 }
 
 void raw_sprite_free_bank(RawSpriteBank *bank)

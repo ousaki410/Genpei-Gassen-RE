@@ -109,19 +109,21 @@ bool kassen_is_unified(const Scenario *sc);
 // ---------------------------------------------------------------------------
 // Unit sprite bank (子任务 10 part 2)
 //
-// Hunitpat.gp is a raw PC-98 4-plane sheet: 151936 B = 1187 tiles of 16x16
-// pixels (128 B per tile).  The bank is decoded once at start-up and the
-// battlefield draws a small formation of unit sprites on each side, the
-// number of sprites scaling with the current troop count.
+// Hunitpat.gp is a raw PC-98 4-plane sheet in the game's native planar
+// order: 24 px per scanline (12 byte stride), 12661 rows.  The unit sprites
+// are 24x32 px on a 36-row pitch - one per faction, twelve in all.  The
+// sheet is decoded once at start-up and the battlefield draws a small
+// formation of unit sprites on each side, the number of sprites scaling with
+// the current troop count.
 // ---------------------------------------------------------------------------
-#define KASSEN_UNIT_TILE_W 16
-#define KASSEN_UNIT_TILE_H 16
-#define KASSEN_MAX_UNITS   24      // per side (6 columns x 4 rows)
+#define KASSEN_UNIT_TILE_W 24
+#define KASSEN_UNIT_TILE_H 32
+#define KASSEN_MAX_UNITS   12      // per side (4 columns x 3 rows)
 
 // One unit sprite placed on the battlefield.
 typedef struct {
     int  x, y;        // top-left pixel in the 640x400 battle view
-    int  tile;        // index into the unit pattern bank
+    int  tile;        // row of the unit sheet where the sprite starts
     bool attacker;    // true = attacking side, false = defending side
 } KassenUnitSprite;
 

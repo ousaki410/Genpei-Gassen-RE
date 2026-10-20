@@ -172,7 +172,7 @@ cmake --build build -j
 | `--import-dos-save <slot>` | — | — | 子任务 10：导入原版 `Savedata.gp` 槽（0..9）：读槽头推断剧本与年月，覆写武将/城池的可变字段，并恢复玩家势力与当主；打印 `[DOS] import slot=.. date=.. scenario=.. leader=.. faction=.. castle=..` |
 | `--export-dos-save <slot>` | — | — | 子任务 10：把当前 `Scenario` + `TurnState` 写回原版 `Savedata.gp` 槽（0..9）；目标为空模板时先用 `Sndata.gp` 重建基础快照再覆写，导出前自动生成 `.bak` 备份 |
 | `--dos-save-path <path>` | — | `games/yphz/Savedata.gp` | 子任务 10：覆盖 DOS 存档槽文件路径（便于在副本上测试导入/导出） |
-| `--preview-raw <file> [tile]` | — | — | 子任务 10：独立预览裸 4 位平面图（`Hunitpat.gp` / `Hchikei.gp` / `Mainobj.gp`）；给出 tile 号时显示该 16×16 图块，否则显示整张 208×236 图集 |
+| `--preview-raw <file> [tile]` | — | — | 子任务 10/11：独立预览裸 4 位平面图（`Hunitpat.gp` / `Hchikei.gp` / `Mainobj.gp`）；给出 tile 号时显示该 24×32 单位精灵，否则显示整张 24 px 宽图集 |
 | `--shot-frame <n>` | — | `2` | 指定 `--screenshot` 在第 n 帧抓图（便于截取合战过程/胜利结算/夺城后的地图/事件 CG） |
 | `--unified` | — | — | 调试用：把 39 城全部划归玩家势力并立即播放「天下統一」结局 CG（用于无头验证） |
 | `--end-turn <n>` | — | `0` | 无头连续推进 n 个月（跨年进位），并弹出最后一月的收入结算框 |
@@ -291,7 +291,7 @@ SDL_VIDEODRIVER=dummy ./bin/yphz_engine --attack 30,29 \
     --battle-plan charge,charge,charge,charge,charge,charge \
     --frames 12 --shot-frame 9 --screenshot /tmp/seize.bmp
 
-# 一键无头回归（36 项）
+# 一键无头回归（38 项）
 tools/run_regression.sh
 ```
 
@@ -654,7 +654,7 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
   `↑↓`/数字移动、`ENTER`/点击确认 → `turn_init()` 并交回主循环进入地图。
 - `--click` 可完整驱动三屏（无头截图验证）；任何“跳转类” CLI 参数都会跳过片头。
 
-**`tools/run_regression.sh` — 36 项无头回归**
+**`tools/run_regression.sh` — 38 项无头回归**
 
 一条命令跑完全部子任务的 CLI 断言（片头点击流、内政/合战/守城/退却、AI 一个月、
 历史事件、天下統一、画廊/NPK 预览、存档往返哈希一致、路网 `edges=72` 与对称连通
@@ -1057,29 +1057,65 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
   跨剧本 `slot2 → export 0 → import 0` 同样一致（`0x61a3d6ef`）；
   槽头家族名修正为**当主家族**（源/平/藤原）而非势力名。
 
-**第二部分：裸 4 位平面（4‑plane）精灵解码**
-- **格式**：非 NPK016 容器的裸图，每条扫描线按
-  `[plane0][plane1][plane2][plane3]` 四段顺序存储，
-  每段 `ceil(w/8)` 字节（1 bit/像素，bit 7 为最左像素），
-  像素色号 = `p0 | p1<<1 | p2<<2 | p3<<3`（与 `decompress.c` 的 NPK 平面
-  转换完全一致，因此共用同一套 PC‑98 16 色调色板）。
-  据此：
-  - `Hunitpat.gp` 151,936 B = **1187 × 128 B** → **1187 块 16×16** 单位图案；
-  - `Hchikei.gp` 10,060 B = **76 B + 78 × 128 B** → 78 块 16×16
-    （同长度亦可解读为 100×100 图块 id 网格 + 60 B 布阵表，二者都成立）；
-  - `Mainobj.gp` 24,544 B = **104 B/行 × 236 行** → **208×236** 图集
-    （每行 26 B/平面 × 4 平面 = 104 B）。
+**第二部分：裸 4 位平面（4‑plane）精灵解码（子任务 11 修正）**
+- **格式**：非 NPK016 容器的裸图，使用**游戏原生的平面序**
+  （与 `decompress.c` 里 NPK/NUP4 解码器输出的顺序完全一致）：
+  每条扫描线由若干 **8 像素组**组成，每组 **4 字节**（每个颜色平面 1 字节，
+  平面 0 = LSB），字节内 bit 7 为最左像素，
+  像素色号 = `b0 | b1<<1 | b2<<2 | b3<<3`。
+  → 扫描线步长 = `4 × ceil(宽/8)` 字节。
+- **实测几何**（由 `tools/solve_raw_layout.py` 反推，见下）：
+  | 文件 | 字节自相关步长 | 扫描线宽 | 行数 | 内容 |
+  |---|---|---|---|---|
+  | `Hunitpat.gp` | **12 B** | **24 px** | 12,661 | **24×32 单位精灵**，36 行间距，共 351 个槽位（12 个势力各一种） |
+  | `Mainobj.gp` | **12 B** | **24 px** | 2,045 | 同款单位精灵 + 地形图块（56 槽位） |
+  | `Hchikei.gp` | — | — | 10,000 | **不是位图**：100×100 的 1 字节地形图块 id 网格（13 种 id）+ 60 B 布阵表 |
 - **引擎实现**：`include/raw_sprite.h` / `src/raw_sprite.c`
-  （`raw_sprite_decode_4plane()` / `raw_sprite_decode_tile_bank()` /
-  `raw_sprite_load_tile_bank()`）。
-- **合战集成**：`src/kassen.c` 载入 `Hunitpat.gp` 图案库，
-  战场上按当前兵力绘制双方队形（每 50 兵 1 个 16×16 精灵，
-  每侧最多 6×4 = 24 个；图案按当主 id 确定性选取）。
-- **工具**：`tools/decode_raw_sprites.py` 输出尺寸报告与预览图
-  （`Hunitpat_sheet.png` / `Hchikei_grid.png` / `Mainobj_sheet.png`）；
-  C 与 Python 解码结果**逐像素一致**（已交叉验证）。
-- **CLI**：`--preview-raw <file> [tile]` 独立预览裸 4 位平面图。
-- **回归**：`tools/run_regression.sh` 增至 **36 项**（新增 DOS 存档往返 +
-  3 项裸图解码检查），全部 PASS；`-Wall -Wextra` 零警告。
+  （`raw_sprite_decode_4plane()` / `raw_sprite_load_sheet()` /
+  `raw_sprite_decode_tile_bank()` / `raw_sprite_load_tile_bank()`）。
+- **合战集成**：`src/kassen.c` 载入 `Hunitpat.gp` 图集，
+  战场上按当前兵力绘制双方队形（每 50 兵 1 个 24×32 精灵，
+  每侧最多 4×3 = 12 个；精灵按当主 id 选取对应势力的图案）。
+- **工具**：
+  - `tools/solve_raw_layout.py` —— **自动求解器**：字节自相关求步长、
+    垂直连贯性求宽度、空间连贯性（最大同色连通区 / 2×2 同色率 / 熵）求平面序，
+    并打印两个 `.pld` 调色板；
+  - `tools/decode_raw_sprites.py` —— 输出尺寸报告与预览图
+    （`Hunitpat_units.png` / `Hunitpat_sheet.png` / `Hchikei_grid.png`）；
+    C 与 Python 解码结果**逐像素一致**（已交叉验证）。
+- **CLI**：`--preview-raw <file> [tile]` 独立预览裸 4 位平面图
+  （带 tile 号时显示第 n 个 24×32 单位精灵）。
+- **回归**：`tools/run_regression.sh` 增至 **38 项**（新增 DOS 存档往返 +
+  5 项裸图解码/求解器检查），全部 PASS；`-Wall -Wextra` 零警告。
+
+**子任务 11 — 裸 4bpp 位平面交错的精确破解 — ✅ 已完成**
+- **问题**：子任务 10 第二部分按“逐行四段平面”解读 `Hunitpat.gp` / `Mainobj.gp`，
+  得到的却是雪花噪点而不是图形 —— 说明平面交错顺序（乃至扫描线步长）猜错了。
+- **求解器**（`tools/solve_raw_layout.py`）用三条独立证据定位真实格式：
+  1. **字节自相关**：对每个步长 *s* 求 `mean |byte[i] − byte[i+s]|`，
+     真实步长处最小（相邻扫描线最相似）。
+     `Hunitpat.gp` → **s = 12**（23.58，次优 24 为 30.92）；
+     `Mainobj.gp` → **s = 24**（41.32）；`Hchikei.gp` → s = 2（低值表，非位图）。
+  2. **垂直连贯性**：相邻行像素相等率 − 随机行相等率。
+     正确宽度下前者远大于后者（`Hunitpat.gp` w=24：+0.117）。
+  3. **空间连贯性**：最大同色连通区占比 / 2×2 同色率 / 熵，
+     用来在 chunk8、rowplanar、blockplanar、packed 四种平面序中选出正解。
+- **结论（已由解码结果肉眼复核）**：
+  - 平面序 = **游戏原生序**：每 8 像素 4 字节，平面 0 = LSB，bit 7 为最左像素
+    （与 `decompress.c` 的 NPK 平面转换一致）；
+  - `Hunitpat.gp` / `Mainobj.gp` 扫描线宽 **24 px**（步长 12 B）；
+  - `Hunitpat.gp` 12,661 行 → **24×32 单位精灵**，36 行间距，**12 个势力各一款**
+    （解码后可直接看到持刀/持枪的武士与各色军旗）；
+  - `Mainobj.gp` 2,045 行 → 同款单位精灵 + 地形图块；
+  - `Hchikei.gp` 并非位图，而是 **100×100 的 1 字节地形图块 id 网格**
+    （13 种 id）+ 60 B 布阵表。
+- **调色板核对**：`Mainpal.pld` / `Losepal.pld` 均为 192 B = **4 组 × 16 色 × 3 字节**
+  （通道序 B,R,G）；引擎运行时载入 `Mainpal.pld` bank 0，与预览图所用调色板一致。
+- **实现**：`src/raw_sprite.c` 改为按 24 px 扫描线解整张图集
+  （`raw_sprite_load_sheet()`），`src/kassen.c` 改画 **24×32** 队形精灵；
+  `tools/decode_raw_sprites.py` 同步，并新增 `--tile` 单独导出某个单位精灵。
+- **验收**：C 与 Python 解码结果**逐像素一致**（`Hunitpat.gp` 12,661 行、
+  `Mainobj.gp` 2,045 行全量比对）；合战画面已能显示出清晰的武士队形；
+  回归 38 项全 PASS，零警告。
 
 补充（非本期）：**音频**（先逆向 `Fmdrv.com` + `Music.gp` 的 FM 音源格式）仍属后续方向。
