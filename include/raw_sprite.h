@@ -48,6 +48,13 @@ typedef struct {
     uint8_t *pixels;      /* row major, width * height bytes */
 } RawSprite;
 
+/* Hchikei.gp: a 100x100 grid of one-byte terrain tile ids followed by a
+ * 60-byte formation table. 子任务 13 exposes it through --dump-chikei. */
+#define CHIKEI_GRID_W          100
+#define CHIKEI_GRID_H          100
+#define CHIKEI_GRID_BYTES      (CHIKEI_GRID_W * CHIKEI_GRID_H)
+#define CHIKEI_FORMATION_BYTES 60
+
 /* Upper bound for a decoded tile bank. */
 #define RAW_SPRITE_MAX_TILES 2048
 

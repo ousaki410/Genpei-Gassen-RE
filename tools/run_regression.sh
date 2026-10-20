@@ -6,7 +6,7 @@
 # driver and asserts the key log lines for every implemented sub-task:
 #   1  input/map      2  message     3  turn      4  gp probe
 #   5  click/gallery  6  kassen      7  ai/event  8  save/opening
-#   9  road network + 家宝 (Mainitem.gp)
+#   9  road network + 家宝 (Mainitem.gp)   12  encoding   13  assets
 #
 # Usage:  tools/run_regression.sh          (expects ./bin/yphz_engine built)
 # Exit:   0 = all pass, 1 = at least one failure.
@@ -161,8 +161,8 @@ fi
 
 # 裸 4 位平面精灵：24 px 扫描线（12 B 步长），单位精灵 24x32，36 行间距
 check "raw 4-plane unit bank"  "Unit patterns: 12661 rows of 24 px, sprites 24x32" --attack 30,29 --frames 2
-check "raw 4-plane preview"   "Raw Hunitpat.gp: 24x32 \(4-plane\)" --preview-raw Hunitpat.gp 3 --frames 2
-check "raw 4-plane sheet"     "Raw Mainobj.gp: 24x2045 \(4-plane\)" --preview-raw Mainobj.gp --frames 2
+check "raw 4-plane preview"   "Raw Hunitpat.gp: 24x32 \(4-plane" --preview-raw Hunitpat.gp 3 --frames 2
+check "raw 4-plane sheet"     "Raw Mainobj.gp: 24x2045 \(4-plane" --preview-raw Mainobj.gp --frames 2
 
 # 布局求解器必须复现已解出的几何（24 px 步长 / chunk8 平面序）
 if python3 tools/solve_raw_layout.py --files Hunitpat.gp 2>&1 | grep -q "s=12:"; then
@@ -193,6 +193,19 @@ if python3 tools/gen_zh_hans_table.py --check 2>&1 | grep -q "zh-Hans table is c
 else
     printf 'FAIL  zh-Hans table regeneration\n'; fail=$((fail + 1))
 fi
+
+echo "== sub-task 13: multi-pack NPK, palette banks, disk labels, raw inspector =="
+check "Opendat multi-pack"      "file=Opendat.gp .*blocks=52"  --dump-packs Opendat.gp
+check "Enddat multi-pack"       "file=Enddat.gp .*blocks=84"   --dump-packs Enddat.gp
+check "Opendat block geometry"  "000 off=0x0007b0 size=42163 dims=640x200" --dump-packs Opendat.gp
+check "palette main bank 2"     "Palette: source=main bank=2"  --palette main --palette-bank 2 --dump-packs Opendat.gp
+check "palette lose bank 3"     "Palette: source=lose bank=3"  --palette lose --palette-bank 3 --dump-packs Enddat.gp
+check "Opendat palette preview" "Preview Opendat.gp block 10/52: 640x200 \(palette=lose#0\)" --preview-npk Opendat.gp 10 --palette lose --palette-bank 0 --frames 2
+check "disk volume labels"      'label="源平合戦 DISK-1"'      --dump-disk-labels
+check "chikei 100x100 grid"     "grid=100x100 formation=60B ids=13" --dump-chikei
+check "chikei terrain ids"      "0=4279 1=1886 2=1284"         --dump-chikei
+check "raw width inspector"     "Raw Maincmd.gp: 96x1275 \(4-plane, width=96, stride=48\)" --preview-raw Maincmd.gp --raw-width 96 --frames 2
+check "raw tile bank inspector" "Raw Montage.gp: 96x96 \(4-plane, width=96" --preview-raw Montage.gp --raw-width 96 --raw-height 96 --frames 2
 
 echo "-------------------------------------------------------------------"
 printf 'TOTAL %d checks: %d passed, %d failed\n' "$((pass + fail))" "$pass" "$fail"

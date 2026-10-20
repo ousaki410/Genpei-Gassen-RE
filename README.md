@@ -7,7 +7,7 @@
 解析出来，并用一个轻量的 SDL2 引擎在 Linux 上重建其可视化与（逐步完善的）游戏逻辑。
 
 当前进度：**可视化层与基础玩法闭环已跑通**（解压 → 调色板 → 字体 → 剧本 → 地图/立绘渲染 →
-内政/移動/出陣/合战/夺城），**音频、存档、势力 AI 与事件脚本尚未实现**。详见文末【进度盘点】。
+内政/移動/出陣/合战/夺城、势力 AI、存档与中文本地化），**音频与完整事件脚本尚未实现**。详见文末【进度盘点】。
 
 ---
 
@@ -172,13 +172,20 @@ cmake --build build -j
 | `--import-dos-save <slot>` | — | — | 子任务 10：导入原版 `Savedata.gp` 槽（0..9）：读槽头推断剧本与年月，覆写武将/城池的可变字段，并恢复玩家势力与当主；打印 `[DOS] import slot=.. date=.. scenario=.. leader=.. faction=.. castle=..` |
 | `--export-dos-save <slot>` | — | — | 子任务 10：把当前 `Scenario` + `TurnState` 写回原版 `Savedata.gp` 槽（0..9）；目标为空模板时先用 `Sndata.gp` 重建基础快照再覆写，导出前自动生成 `.bak` 备份 |
 | `--dos-save-path <path>` | — | `games/yphz/Savedata.gp` | 子任务 10：覆盖 DOS 存档槽文件路径（便于在副本上测试导入/导出） |
-| `--preview-raw <file> [tile]` | — | — | 子任务 10/11：独立预览裸 4 位平面图（`Hunitpat.gp` / `Hchikei.gp` / `Mainobj.gp`）；给出 tile 号时显示该 24×32 单位精灵，否则显示整张 24 px 宽图集 |
+| `--preview-raw <file> [tile]` | — | — | 子任务 10/11：独立预览裸 4 位平面图（`Hunitpat.gp` / `Mainobj.gp` 等）；给出 tile 号时显示该 24×32 单位精灵，否则显示整张 24 px 宽图集；子任务 13 可用 `--raw-width` / `--raw-height` 改按任意平面宽度查看未解格式 |
 | `--shot-frame <n>` | — | `2` | 指定 `--screenshot` 在第 n 帧抓图（便于截取合战过程/胜利结算/夺城后的地图/事件 CG） |
 | `--unified` | — | — | 调试用：把 39 城全部划归玩家势力并立即播放「天下統一」结局 CG（用于无头验证） |
 | `--end-turn <n>` | — | `0` | 无头连续推进 n 个月（跨年进位），并弹出最后一月的收入结算框 |
 | `--click <[r]x,y[@frame]>` | — | — | 向 `InputState` 注入一次逻辑坐标点击边沿（前缀 `r` 为右键）；可重复，亦可用 `;` 串联（`--click '560,75@1;200,103@2'`），默认从第 1 帧起逐帧分配 |
 | `--preview-npk <file> <block>` | — | — | 独立预览任意 NPK016 容器块（居中/全屏渲染），配合 `--screenshot` 无头验证 |
-| `--gallery <pack>` | — | — | 直接打开 NPK 画廊并定位到第 n 个包（0=Logo, 1=Mainevt, 2=Mainitem, 3=Mainstl, 4=Maincmd2, 5=Hkeshiki, 6=Hkumi, 7=Hikback） |
+| `--gallery <pack>` | — | — | 直接打开 NPK 画廊并定位到第 n 个包（0=Logo, 1=Mainevt, 2=Mainitem, 3=Mainstl, 4=Maincmd2, 5=Hkeshiki, 6=Hkumi, 7=Hikback, 8=Opendat, 9=Enddat） |
+| `--dump-packs <file\|all>` | — | — | 子任务 13：扫描多包 NPK016 容器并列出每块偏移/大小/尺寸（`Opendat.gp` 52 块、`Enddat.gp` 84 块；`all` = 两者） |
+| `--palette <main\|lose>` | — | `main` | 子任务 13：选择 `Mainpal.pld` 或 `Losepal.pld` 作为运行时调色板（影响预览/画廊/合战/地图） |
+| `--palette-bank <0..3>` | — | `0` | 子任务 13：选择 4 组 16 色调色板中的一组 |
+| `--dump-disk-labels` | — | — | 子任务 13：读取 `Disk-1..5.gp` 的 cp932 卷标并转 UTF-8 输出 |
+| `--dump-chikei` | — | — | 子任务 13：导出 `Hchikei.gp` 的 100×100 地形 id 网格、id 计数与 60 B 布阵表 |
+| `--raw-width <px>` | — | — | 子任务 13：`--preview-raw` 按指定宽度重解裸 4 位平面图（步长 = 4×⌈w/8⌉），用于侦察 `Maincmd` / `Montage` / `Kisetsu` |
+| `--raw-height <px>` | — | — | 子任务 13：配合 `--raw-width` 把裸图当作固定尺寸 tile 阵列，`tile` 号选择第 n 个 tile |
 | `--frames <n>` | — | `0` | 运行 n 帧后自动退出（`0` = 无限，用于回归/无头测试） |
 | `--screenshot <path>` | — | — | 第 2 帧导出 640x400 BMP 并退出（隐含 `--frames 10`） |
 
@@ -299,7 +306,16 @@ SDL_VIDEODRIVER=dummy ./bin/yphz_engine --attack 30,29 \
 SDL_VIDEODRIVER=dummy ./bin/yphz_engine --map --lang zh --frames 2 \
     --screenshot /tmp/zh_map.bmp
 
-# 一键无头回归（49 项）
+# 子任务 13：多包 NPK / 调色板库 / 磁盘卷标 / Hchikei 地形 / 裸图宽度侦察
+./bin/yphz_engine --dump-packs all | head -6      # Opendat 52 块 + Enddat 84 块
+./bin/yphz_engine --dump-disk-labels             # 源平合戦 DISK-1..5
+./bin/yphz_engine --dump-chikei | head -4        # 100×100 地形 id + 60 B 布阵表
+SDL_VIDEODRIVER=dummy ./bin/yphz_engine --preview-npk Opendat.gp 10 \
+    --palette lose --palette-bank 2 --frames 2 --screenshot /tmp/open10.bmp
+SDL_VIDEODRIVER=dummy ./bin/yphz_engine --preview-raw Maincmd.gp \
+    --raw-width 96 --frames 2 --screenshot /tmp/maincmd96.bmp
+
+# 一键无头回归（60 项）
 tools/run_regression.sh
 ```
 
@@ -435,25 +451,25 @@ python3 tools/probe_gp_files.py --csv        # 表格导入
 | `Losepal.pld` | 192 | palette | 64 colors (4 bank(s) x 16) |
 | `Mainpal.pld` | 192 | palette | 64 colors (4 bank(s) x 16) |
 | `Edmusic.gp` | 3477 | raw | u16[0 0 2666 2666] zero=6.2% H=6.43b/B unique=197 \| FM/PMD ending music (not parsed yet) |
-| `Enddat.gp` | 1037151 | raw | u16[0 768 513 7] zero=3.7% H=6.98b/B unique=256 \| ending / epilogue data (not parsed yet) |
+| `Enddat.gp` | 1037151 | raw | 多包 NPK016 容器：**84 块**（多数 640×200，`--dump-packs` 可逐块列出）；结局 / 后日谈插图 |
 | `Haikei.gp` | 47680 | raw | u16[213 21802 43520 85] zero=37.7% H=4.43b/B unique=253 \| battle background (raw, not parsed yet) |
-| `Hchikei.gp` | 10060 | raw | u16[0 1 256 257] zero=42.8% H=2.50b/B unique=13 \| battle terrain map (raw, not parsed yet) |
+| `Hchikei.gp` | 10060 | raw | u16[0 1 256 257] zero=42.8% H=2.50b/B unique=13 \| **100×100 地形 id 网格 + 60 B 布阵表**（`--dump-chikei`） |
 | `Hground.gp` | 114048 | raw | u16[0 0 0 0] zero=49.8% H=3.82b/B unique=247 \| battle ground tiles (raw, not parsed yet) |
 | `Hikuchi.gp` | 51840 | raw | u16[0 0 0 0] zero=61.3% H=2.71b/B unique=244 \| battle fortress/base graphics (raw, not parsed yet) |
 | `Hkei.gp` | 6912 | raw | u16[255 65535 65280 255] zero=18.1% H=6.23b/B unique=255 \| battle unit/effect graphics (raw, not parsed yet) |
 | `Hunitpat.gp` | 151936 | raw | u16[0 4096 16 1030] zero=59.7% H=3.29b/B unique=256 \| battle unit patterns (raw, not parsed yet) |
 | `Kaodata.gp` | 495435 | raw | u16[128 160 112 38815] zero=11.0% H=6.41b/B unique=256 \| portrait bank, 90 x 0x728 records (see decompress.c) |
-| `Kisetsu.gp` | 66428 | raw | u16[160 128 43637 43524] zero=6.3% H=6.32b/B unique=255 \| seasonal background (raw, not parsed yet) |
+| `Kisetsu.gp` | 66428 | raw | u16[160 128 43637 43524] zero=6.3% H=6.32b/B unique=255 \| seasonal background (raw)；开头 u16 = 160,128，`--raw-width 160` 可侦察 |
 | `Mainanm.gp` | 220040 | raw | u16[255 65535 65280 255] zero=33.8% H=4.72b/B unique=256 \| animation frames (raw, not parsed yet) |
-| `Maincmd.gp` | 61216 | raw | u16[65450 255 65450 510] zero=48.7% H=4.23b/B unique=256 \| command/UI sprite/bitmap data (raw, not parsed yet) |
+| `Maincmd.gp` | 61216 | raw | u16[65450 255 65450 510] zero=48.7% H=4.23b/B unique=256 \| command/UI sprite/bitmap data (raw)；无块头，`--preview-raw --raw-width 96` 可侦察 |
 | `Mainobj.gp` | 24544 | raw | u16[0 0 0 0] zero=43.6% H=4.64b/B unique=256 \| map object sprites (raw, not parsed yet) |
-| `Montage.gp` | 239072 | raw | u16[0 2560 0 234] zero=50.7% H=4.11b/B unique=256 \| montage / ending collage (raw, not parsed yet) |
+| `Montage.gp` | 239072 | raw | u16[0 2560 0 234] zero=50.7% H=4.11b/B unique=256 \| montage / ending collage (raw)；无块头，`--raw-width` 可侦察 |
 | `Music.gp` | 44640 | raw | u16[22 0 0 1600] zero=5.3% H=6.53b/B unique=255 \| FM/PMD music data (not parsed yet) |
-| `Opendat.gp` | 853233 | raw | u16[0 768 517 2826] zero=6.4% H=6.88b/B unique=256 \| opening / prologue data (not parsed yet) |
+| `Opendat.gp` | 853233 | raw | 多包 NPK016 容器：**52 块**（前 0x7B0 为脚本前导，`--dump-packs` 可逐块列出）；片头 / 序章插图 |
 | `Opmusic.gp` | 3760 | raw | u16[0 0 608 608] zero=2.8% H=6.27b/B unique=167 \| FM/PMD opening music (not parsed yet) |
 | `Savedata.gp` | 434030 | raw | u16[1180 266 0 48533] zero=13.0% \| **10 × 43403 B 存档槽**：u16 LE 年@0 + 月@2 + 标志@3，18 B 处第二份年月头，24 B 起势力表（`01 00..0e 00`）；槽 0/1/2 = 1180/10、1183/1、1184/10，槽 3–9 为未用模板（见 `tools/probe_savedata.py`） |
 | `Sndata.gp` | 165064 | raw | u16[1180 521 0 1] zero=36.2% H=5.33b/B unique=256 \| scenario table: 4 x 41266 B (officers/castles/conns) |
-| `Disk-1.gp` | 18 | text | 源平合戦 DISK-1 |
+| `Disk-1.gp` | 18 | text | 源平合戦 DISK-1（`--dump-disk-labels`） |
 | `Disk-2.gp` | 18 | text | 源平合戦 DISK-2 |
 | `Disk-3.gp` | 18 | text | 源平合戦 DISK-3 |
 | `Disk-4.gp` | 18 | text | 源平合戦 DISK-4 |
@@ -527,7 +543,7 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
   需结合 `Fmdrv.com` 驱动反汇编确定 FM/PMD 指令流。
 - **数据表（4 个 raw）**：`Sndata.gp`（已解析）、`Savedata.gp`（10 × 43403 B 存档槽，
   结构与 `Sndata.gp` 的 6 B 头 + 势力表布局不同、内部偏移漂移，故引擎改用自描述原生
-  快照）、`Opendat.gp`（片头脚本）、`Enddat.gp`（结局脚本）。
+  快照）、`Opendat.gp` / `Enddat.gp`（已确认为 **52 / 84 块的多包 NPK016 容器**）。
 
 ### 下一步优先级
 
@@ -812,10 +828,10 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
 | **片头/选势力** | ✅ `Logo.gp` 标题 → 4 剧本选择 → 15 势力大名选择（旗色 + 当主 `Kaodata` 立绘）→ 地图；无跳转类 CLI 参数时自动进入，所有既有 CLI 路径保持不变 |
 | **音频** | **完全未实现**：`Music.gp`/`Opmusic.gp`/`Edmusic.gp` 未解析，FM 驱动 `Fmdrv.com` 未逆向，无 MIDI/音效 |
 | **游戏内文本** | ✅ C 引擎已加载 `Message.gp`（LS11，5 条 / 1305 句）并在底部弹框显示；`--lang zh` 可在终端与屏幕上切换简体中文；`Mainevt.gp` 事件脚本逻辑仍未逆向 |
-| **未解析的数据文件** | `Maincmd.gp`、`Kisetsu.gp`、`Montage.gp`、`Opendat.gp`、`Enddat.gp`、`Disk-*.gp` 等裸格式未解压；`Mainitem.gp` 已接入 19 件家宝系统（名称/加成/赏赐/缴获）；`Hunitpat.gp` / `Hchikei.gp` / `Mainobj.gp` 已接入裸 4 位平面解码器（16×16 图块 / 208×236 图集），合战画面按兵力绘制双方队形 |
+| **未解析的数据文件** | `Opendat.gp` / `Enddat.gp` 已确认为**多包 NPK016 容器**（52 / 84 块，`--dump-packs` / `--preview-npk` / 画廊可浏览）；`Disk-*.gp` 卷标已导出（`--dump-disk-labels`）；`Hchikei.gp` 的 100×100 地形网格 + 60 B 布阵表可用 `--dump-chikei` 完整导出；`Maincmd.gp` / `Kisetsu.gp` / `Montage.gp` / `Mainanm.gp` 仍是无块头的裸格式，可用 `--preview-raw --raw-width` 逐宽度侦察；`Mainitem.gp` 已接入 19 件家宝系统；`Hunitpat.gp` / `Mainobj.gp` 已接入裸 4 位平面解码器 |
 | **未逆向的程序** | `Main.exe`/`Genpei.com`/`Open.exe`/`End.exe` 的主循环、菜单、合战逻辑 |
 
-### 四、2200G 上的子任务（1–12 已完成）
+### 四、2200G 上的子任务（1–13 已完成）
 
 > 说明：当前全部渲染为软件 blit（640x400），2200G（Ryzen 3 2200G + Vega 8）完全
 > 够用；以下均不涉及重 GPU/着色器开发，先打通**逻辑层**。
@@ -1157,5 +1173,31 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
 - **验收**：`--dump-officers` 输出 `源頼朝`；`--lang zh` 输出 `源赖朝` / `镰仓`；
   `--dump-messages --lang zh` 输出 `武将ｦ选择…`；`--lang zh` 截图与原版布局逐像素对齐
   （仅字形不同）；回归 **49 项**全 PASS，`-Wall -Wextra` 零警告。
+
+**子任务 13 — 多包 NPK 容器、调色板库、磁盘卷标与裸图检查器 — ✅ 已完成**
+- **多包容器**：`include/npk.h` 的块表上限由 64 提升到 **128**；新增 `npk_load_path()` 与
+  `npk_block_info()`（只读块头，返回尺寸与块长，不解压）。`Opendat.gp` = 前导 0x7B0 B +
+  **52** 个连续 NPK016 块；`Enddat.gp` = 前导 0x2A0 B + **84** 个块。
+  `--dump-packs <file|all>` 输出 `[PACK] file=... blocks=...` 及逐块 `off/size/dims`。
+- **调色板库**：`--palette <main|lose>` 选择 `Mainpal.pld` / `Losepal.pld`，
+  `--palette-bank <0..3>` 选择 4 组 16 色之一；启动横幅打印
+  `[+] Palette: source=... bank=...`，预览/画廊/合战/地图统一使用该组颜色。
+  NPK / 裸图预览标题追加 `PAL MAIN#0` / `PAL LOSE#2`。
+- **磁盘卷标**：`--dump-disk-labels` 读取 `Disk-1..5.gp`（18 B，cp932 文本 + CR + 填充），
+  经 `encoding_sjis_to_display()` 输出 `label="源平合戦 DISK-N"`（`--lang zh` 同样生效）。
+- **Hchikei 地形网格**：`--dump-chikei` 导出 100×100 一字节 tile id 网格
+  （13 种 id，计数 `0=4279 1=1886 …`）、100 行十六进制地图与尾部 60 B 布阵表
+  （`03 00 02 03 05 00 …`），并打印 `grid=100x100 formation=60B ids=13`。
+- **裸图宽度检查器**：`--raw-width <px>` 按指定宽度重解 4 位平面图
+  （步长 = 4×⌈w/8⌉，高度 = 文件长度 / 步长）；`--raw-height <px>` 进一步把文件当作
+  固定尺寸 tile 阵列，`tile` 号选择第 n 块。例：`--preview-raw Maincmd.gp --raw-width 96`
+  → `96x1275`；`--preview-raw Montage.gp --raw-width 96 --raw-height 96 2` → 第 2 个 96×96 tile。
+- **画廊**：新增 `Opendat.gp`（8）与 `Enddat.gp`（9）两个多包图集，`←/→` 可浏览全部
+  52 / 84 块；`--preview-npk Opendat.gp 10` 可直接查看序章插图。
+- **调色板核对**：`Opendat.gp` 第 10 块用 `Losepal.pld` bank 0 或 `Mainpal.pld` bank 3
+  观感最自然；块头内嵌的 16 色表是 PC-98 默认色，仅作参考。
+- **验收**：`--dump-packs all` → 52 / 84 块；`--dump-disk-labels` → 5 个卷标；
+  `--dump-chikei` → 13 种 id；`--preview-raw Maincmd.gp --raw-width 96` → 96×1275；
+  回归 **60 项**全 PASS，`-Wall -Wextra` 零警告。
 
 补充（非本期）：**音频**（先逆向 `Fmdrv.com` + `Music.gp` 的 FM 音源格式）仍属后续方向。

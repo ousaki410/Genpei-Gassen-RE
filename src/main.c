@@ -378,7 +378,9 @@ typedef struct {
 
 static const char *const GALLERY_PACKS[] = {
     "Logo.gp", "Mainevt.gp", "Mainitem.gp", "Mainstl.gp",
-    "Maincmd2.gp", "Hkeshiki.gp", "Hkumi.gp", "Hikback.gp"
+    "Maincmd2.gp", "Hkeshiki.gp", "Hkumi.gp", "Hikback.gp",
+    // 子任务 13: opening / ending multi-pack containers.
+    "Opendat.gp", "Enddat.gp"
 };
 #define GALLERY_PACK_COUNT ((int)(sizeof(GALLERY_PACKS) / sizeof(GALLERY_PACKS[0])))
 
@@ -1378,6 +1380,136 @@ static void dump_code_table(const char *which) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// 子任务 13: remaining containers and raw assets
+// ---------------------------------------------------------------------------
+
+// Resolve `name` against the asset directory first, then the current directory.
+static bool resolve_asset_file(const char *name, char *out, size_t out_size) {
+    if (!name || !out || out_size == 0) return false;
+    snprintf(out, out_size, "%s/%s", s_asset_dir, name);
+    if (file_exists(out)) return true;
+    snprintf(out, out_size, "%s", name);
+    return file_exists(out);
+}
+
+static void dump_pack_file(const char *file) {
+    char path[512];
+    if (!resolve_asset_file(file, path, sizeof(path))) {
+        fprintf(stderr, "[WARN] --dump-packs: cannot open '%s'\n", file);
+        return;
+    }
+
+    NpkFile pack = {0};
+    if (!npk_load_path(&pack, path)) {
+        fprintf(stderr, "[WARN] --dump-packs: no NPK016 block in '%s'\n", file);
+        return;
+    }
+
+    printf("[PACK] file=%s size=%zu blocks=%d\n", file, pack.size, pack.count);
+    size_t total = 0;
+    for (int i = 0; i < pack.count; i++) {
+        uint16_t w = 0, h = 0;
+        size_t block_size = 0;
+        npk_block_info(&pack, i, &w, &h, &block_size);
+        total += block_size;
+        printf("[PACK]  %03d off=0x%06zx size=%zu dims=%ux%u\n",
+               i, pack.offsets[i], block_size, w, h);
+    }
+    printf("[PACK] done file=%s blocks=%d payload=%zu\n", file, pack.count, total);
+    npk_free(&pack);
+}
+
+static void dump_packs(const char *which) {
+    if (strcmp(which, "all") == 0) {
+        dump_pack_file("Opendat.gp");
+        dump_pack_file("Enddat.gp");
+        return;
+    }
+    dump_pack_file(which);
+}
+
+static void dump_disk_labels(void) {
+    for (int i = 1; i <= 5; i++) {
+        char name[32];
+        snprintf(name, sizeof(name), "Disk-%d.gp", i);
+
+        size_t size = 0;
+        uint8_t *data = load_file(name, &size);
+        if (!data) {
+            printf("[DISK] file=%s status=missing\n", name);
+            continue;
+        }
+
+        // The files are an 18 byte DOS volume label: cp932 text + CR + NULs.
+        char sjis[64];
+        size_t n = 0;
+        while (n < size && n + 1 < sizeof(sjis) &&
+               data[n] != '\r' && data[n] != '\n' && data[n] != '\0') {
+            sjis[n] = (char)data[n];
+            n++;
+        }
+        sjis[n] = '\0';
+
+        char utf8[192];
+        encoding_sjis_to_display(sjis, utf8, sizeof(utf8));
+        printf("[DISK] file=%s size=%zu label=\"%s\"\n", name, size, utf8);
+        free(data);
+    }
+}
+
+static void dump_chikei(void) {
+    size_t size = 0;
+    uint8_t *data = load_file("Hchikei.gp", &size);
+    if (!data) {
+        fprintf(stderr, "[WARN] --dump-chikei: cannot open Hchikei.gp\n");
+        return;
+    }
+    if (size < CHIKEI_GRID_BYTES) {
+        fprintf(stderr, "[WARN] --dump-chikei: %zu bytes, expected >= %d\n",
+                size, CHIKEI_GRID_BYTES);
+        free(data);
+        return;
+    }
+
+    int counts[256] = {0};
+    for (int i = 0; i < CHIKEI_GRID_BYTES; i++) counts[data[i]]++;
+
+    int ids = 0;
+    for (int i = 0; i < 256; i++) {
+        if (counts[i] > 0) ids++;
+    }
+
+    size_t formation = size - CHIKEI_GRID_BYTES;
+    printf("[CHIKEI] file=Hchikei.gp size=%zu grid=%dx%d formation=%zuB ids=%d\n",
+           size, CHIKEI_GRID_W, CHIKEI_GRID_H, formation, ids);
+
+    printf("[CHIKEI] id counts:");
+    for (int i = 0; i < 256; i++) {
+        if (counts[i] > 0) printf(" %d=%d", i, counts[i]);
+    }
+    printf("\n");
+
+    char row[CHIKEI_GRID_W + 1];
+    for (int y = 0; y < CHIKEI_GRID_H; y++) {
+        const uint8_t *src = data + y * CHIKEI_GRID_W;
+        for (int x = 0; x < CHIKEI_GRID_W; x++) {
+            row[x] = (src[x] < 16) ? "0123456789ABCDEF"[src[x]] : '?';
+        }
+        row[CHIKEI_GRID_W] = '\0';
+        printf("[CHIKEI] row %02d %s\n", y, row);
+    }
+
+    if (formation > 0) {
+        printf("[CHIKEI] formation:");
+        for (size_t i = 0; i < formation; i++) {
+            printf(" %02X", data[CHIKEI_GRID_BYTES + i]);
+        }
+        printf("\n");
+    }
+    free(data);
+}
+
 int main(int argc, char *argv[]) {
     const char *screenshot_path = NULL;
     int max_frames = 0;
@@ -1472,9 +1604,18 @@ int main(int argc, char *argv[]) {
     int  preview_npk_index = 0;
     const char *preview_raw_name = NULL;   // 子任务 10 part 2
     int  preview_raw_index = 0;
+    int  raw_width = 0;                    // 子任务 13: --raw-width <px>
+    int  raw_height = 0;                   // 子任务 13: --raw-height <px>
     bool preview_mode = false;
     NpkFile preview_pack = {0};
     ImageDecoded preview_img = {0};
+
+    // 子任务 13: palette bank selection + remaining-asset dumps.
+    const char *palette_name = "main";     // --palette <main|lose>
+    int  palette_bank = 0;                 // --palette-bank <0..3>
+    const char *dump_packs_file = NULL;    // --dump-packs <file|all>
+    bool dump_disk_labels_flag = false;    // --dump-disk-labels
+    bool dump_chikei_flag = false;         // --dump-chikei
 
     // In-game NPK gallery (L) / item viewer (I).
     bool gallery_mode = false;
@@ -1686,6 +1827,34 @@ int main(int argc, char *argv[]) {
                 preview_raw_index = atoi(argv[++i]);
                 if (preview_raw_index < 0) preview_raw_index = 0;
             }
+        } else if (strcmp(argv[i], "--raw-width") == 0 && i + 1 < argc) {
+            raw_width = atoi(argv[++i]);
+            if (raw_width < 8) raw_width = 8;
+            if (raw_width > 4096) raw_width = 4096;
+        } else if (strcmp(argv[i], "--raw-height") == 0 && i + 1 < argc) {
+            raw_height = atoi(argv[++i]);
+            if (raw_height < 1) raw_height = 1;
+            if (raw_height > 65535) raw_height = 65535;
+        } else if (strcmp(argv[i], "--palette") == 0 && i + 1 < argc) {
+            const char *name = argv[++i];
+            if (strcmp(name, "main") == 0 || strcmp(name, "lose") == 0) {
+                palette_name = name;
+            } else {
+                fprintf(stderr, "[WARN] unknown --palette '%s' (main|lose)\n", name);
+            }
+        } else if (strcmp(argv[i], "--palette-bank") == 0 && i + 1 < argc) {
+            palette_bank = atoi(argv[++i]);
+            if (palette_bank < 0) palette_bank = 0;
+            if (palette_bank > 3) palette_bank = 3;
+        } else if (strcmp(argv[i], "--dump-packs") == 0 && i + 1 < argc) {
+            dump_packs_file = argv[++i];
+            if (max_frames == 0) max_frames = 1;
+        } else if (strcmp(argv[i], "--dump-disk-labels") == 0) {
+            dump_disk_labels_flag = true;
+            if (max_frames == 0) max_frames = 1;
+        } else if (strcmp(argv[i], "--dump-chikei") == 0) {
+            dump_chikei_flag = true;
+            if (max_frames == 0) max_frames = 1;
         } else if (strcmp(argv[i], "--gallery") == 0 && i + 1 < argc) {
             gallery_pack = atoi(argv[++i]);
             if (gallery_pack < 0) gallery_pack = 0;
@@ -1732,6 +1901,11 @@ int main(int argc, char *argv[]) {
                encoding_zh_hans_count());
         if (dump_table) dump_code_table(dump_table);
     }
+
+    // 子任务 13: multi-pack containers, disk labels and the Hchikei terrain grid.
+    if (dump_packs_file) dump_packs(dump_packs_file);
+    if (dump_disk_labels_flag) dump_disk_labels();
+    if (dump_chikei_flag) dump_chikei();
 
     // 子任务 10: resolve the DOS Savedata.gp path (defaults to the asset dir).
     char dos_path[512];
@@ -1806,6 +1980,8 @@ int main(int argc, char *argv[]) {
                     load_path != NULL || save_path != NULL || dump_state ||
                     show_roads || item_show >= 0 || grant_item >= 0 ||
                     dump_officers || dump_messages || dump_table != NULL ||
+                    dump_packs_file != NULL || dump_disk_labels_flag ||
+                    dump_chikei_flag ||
                     dos_import_slot >= 0 || dos_export_slot >= 0 ||
                     scenario_given || castle_given || officer_given ||
                     faction_override >= 0;
@@ -1815,12 +1991,19 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    // 1. Load Mainpal.pld Bank 0
+    // 1. Load the selected palette bank (子任务 13: Mainpal/Losepal x 0..3).
+    const bool palette_lose = (strcmp(palette_name, "lose") == 0);
+    const char *pld_file = palette_lose ? "Losepal.pld" : "Mainpal.pld";
     size_t pld_size = 0;
-    uint8_t *pld_data = load_file("Mainpal.pld", &pld_size);
+    uint8_t *pld_data = load_file(pld_file, &pld_size);
     if (pld_data) {
-        hal_video_load_pld_bank(pld_data, 0);
-        printf("[+] Loaded Mainpal.pld Bank 0 (16-color PC-98 GBR palette)\n");
+        hal_video_load_pld_bank(pld_data, palette_bank);
+        printf("[+] Loaded %s Bank %d (16-color PC-98 GBR palette)\n",
+               pld_file, palette_bank);
+        printf("[+] Palette: source=%s bank=%d\n",
+               palette_lose ? "lose" : "main", palette_bank);
+    } else {
+        fprintf(stderr, "[WARN] cannot load %s\n", pld_file);
     }
 
     // 2. Load JIS.FNT & FONT.CHR
@@ -2091,9 +2274,10 @@ int main(int argc, char *argv[]) {
         if (npk_load(&preview_pack, s_asset_dir, preview_npk_name) &&
             npk_decode(&preview_pack, preview_npk_index, &preview_img)) {
             preview_mode = true;
-            printf("[+] Preview %s block %d/%d: %dx%d\n",
+            printf("[+] Preview %s block %d/%d: %dx%d (palette=%s#%d)\n",
                    preview_npk_name, preview_npk_index, preview_pack.count,
-                   preview_img.width, preview_img.height);
+                   preview_img.width, preview_img.height,
+                   palette_lose ? "lose" : "main", palette_bank);
         } else {
             fprintf(stderr, "[ERROR] --preview-npk failed: %s block %d\n",
                     preview_npk_name, preview_npk_index);
@@ -2118,11 +2302,31 @@ int main(int argc, char *argv[]) {
             if (rdata && rsize > 0 &&
                 fread(rdata, 1, (size_t)rsize, rf) == (size_t)rsize) {
                 RawSprite rs;
-                // The raw sheets use the game's native planar order with a
-                // 24 px scanline (12 byte stride); --preview-raw <n> shows
-                // the n-th unit sprite (24x32) of the sheet.
+                // The solved raw sheets use the game's native planar order
+                // with a 24 px scanline (12 byte stride); --preview-raw <n>
+                // shows the n-th unit sprite (24x32) of such a sheet.
+                // 子任务 13: --raw-width / --raw-height re-interpret the file
+                // as an arbitrary planar sheet or tile bank so the remaining
+                // raw assets (Maincmd/Montage/Kisetsu) can be inspected.
                 bool ok = false;
-                if (preview_raw_index > 0) {
+                const uint16_t sheet_w = (raw_width > 0) ? (uint16_t)raw_width
+                                                         : (uint16_t)RAW_SPRITE_WIDTH;
+                const size_t row_bytes = (size_t)4 * ((sheet_w + 7) / 8);
+
+                if (raw_width > 0 && raw_height > 0) {
+                    const size_t tile_bytes = row_bytes * (size_t)raw_height;
+                    const size_t tile_idx = (preview_raw_index > 0)
+                                                ? (size_t)(preview_raw_index - 1) : 0;
+                    const size_t off = tile_idx * tile_bytes;
+                    ok = tile_bytes > 0 && off + tile_bytes <= (size_t)rsize &&
+                         raw_sprite_decode_4plane(rdata + off, tile_bytes, sheet_w,
+                                                  (uint16_t)raw_height, &rs);
+                } else if (raw_width > 0) {
+                    const uint16_t rows = row_bytes > 0
+                                              ? (uint16_t)((size_t)rsize / row_bytes) : 0;
+                    ok = rows > 0 &&
+                         raw_sprite_decode_4plane(rdata, (size_t)rsize, sheet_w, rows, &rs);
+                } else if (preview_raw_index > 0) {
                     const int top = (preview_raw_index - 1) * RAW_SPRITE_UNIT_PITCH;
                     const size_t off = (size_t)top * RAW_SPRITE_ROW_BYTES;
                     ok = off + (size_t)RAW_SPRITE_ROW_BYTES * KASSEN_UNIT_TILE_H <= (size_t)rsize &&
@@ -2140,8 +2344,9 @@ int main(int argc, char *argv[]) {
                     preview_raw_img.pixels = rs.pixels;
                     preview_raw_img.mask = NULL;
                     preview_mode = true;
-                    printf("[+] Raw %s: %dx%d (4-plane)\n",
-                           preview_raw_name, rs.width, rs.height);
+                    printf("[+] Raw %s: %dx%d (4-plane, width=%u, stride=%zu)\n",
+                           preview_raw_name, rs.width, rs.height,
+                           (unsigned)rs.width, row_bytes);
                 } else {
                     fprintf(stderr, "[ERROR] --preview-raw failed: %s\n",
                             preview_raw_name);
@@ -3092,8 +3297,9 @@ int main(int argc, char *argv[]) {
             snprintf(raw_name, sizeof(raw_name), "%s",
                      preview_raw_name ? preview_raw_name : "?");
             ascii_upper(raw_name);
-            snprintf(cap, sizeof(cap), "RAW %s  %dx%d  4-PLANE",
-                     raw_name, preview_raw_img.width, preview_raw_img.height);
+            snprintf(cap, sizeof(cap), "RAW %s  %dx%d  4-PLANE  PAL %s#%d",
+                     raw_name, preview_raw_img.width, preview_raw_img.height,
+                     palette_lose ? "LOSE" : "MAIN", palette_bank);
             hal_video_fill_rect(0, PC98_HEIGHT - 20, PC98_WIDTH, 20, 1);
             hal_video_draw_rect(0, PC98_HEIGHT - 20, PC98_WIDTH, 20, 7);
             hal_video_draw_text_sjis(16, PC98_HEIGHT - 18, cap, 7);
@@ -3105,9 +3311,10 @@ int main(int argc, char *argv[]) {
             snprintf(npk_name, sizeof(npk_name), "%s",
                      preview_npk_name ? preview_npk_name : "?");
             ascii_upper(npk_name);
-            snprintf(cap, sizeof(cap), "NPK %s  BLOCK %d/%d  %dx%d",
+            snprintf(cap, sizeof(cap), "NPK %s  BLOCK %d/%d  %dx%d  PAL %s#%d",
                      npk_name, preview_npk_index, preview_pack.count,
-                     preview_img.width, preview_img.height);
+                     preview_img.width, preview_img.height,
+                     palette_lose ? "LOSE" : "MAIN", palette_bank);
             hal_video_fill_rect(0, PC98_HEIGHT - 20, PC98_WIDTH, 20, 1);
             hal_video_draw_rect(0, PC98_HEIGHT - 20, PC98_WIDTH, 20, 7);
             hal_video_draw_text_sjis(16, PC98_HEIGHT - 18, cap, 7);
