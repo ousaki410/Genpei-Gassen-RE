@@ -155,7 +155,11 @@ cmake --build build -j
 | `--test-msg <n>` | — | — | 在战略地图上弹出 `Message.gp` 第 n 条台词对话框（配合 `--screenshot` 无头验证） |
 | `--msg-entry <n>` | — | `0` | `--test-msg` 使用的 LS11 条目编号（Message.gp 共 5 条） |
 | `--faction <n>` | — | 鎌倉所属 | 覆盖玩家操作势力（0..14）；默认取鎌倉（30 号城）的势力 |
-| `--do-cmd <cmd>` | — | — | 无头执行一次内政命令：`develop` / `recruit` / `tax` / `move` / `officers` / `end`；自动选中该城首个未行动武将并弹出带立绘的结算框（`move` 需配合 `--move-to`） |
+| `--do-cmd <cmd>` | — | — | 无头执行一次命令：`develop` / `recruit` / `tax` / `move` / `officers` / `end` / `charity` / `appoint` / `reward` / `diplomacy` / `court` / `entice` / `rumor`；自动选中该城首个未行动武将并弹出带立绘的结算框（`move` 需配合 `--move-to`） |
+| `--guide` | — | — | 子任务 14：启动后直接打开六页新手引导（目的/内政/人事/外交/计略/合战） |
+| `--testbench` | — | — | 子任务 14：启动后直接打开 F2 快速试验台（内政外交 / 合战一骑讨 / 历史动画 / 剧本势力） |
+| `--testbench-action <name>` | — | — | 子任务 14：无头执行一个试验台动作：`develop` / `recruit` / `tax` / `diplomacy` / `espionage` / `officer` / `max` / `reset` / `attack` / `defend` / `duel` / `grapple` / `auto` / `eventN` / `movie-open` / `movie-end` / `scenarioN` / `factionN` |
+| `--movie <open\|end>` | — | — | 子任务 15：连续播放 `Opendat.gp`（52 块）或 `Enddat.gp`（84 块）并自动轮换调色板 bank |
 | `--move-to <n>` | — | 首个己方邻城 | `--do-cmd move` 的目标城；必须是当前城的己方相邻城 |
 | `--attack <from,to>` | — | — | 无头发动合战：从 `from` 城进攻相邻敌城 `to`，自动选择城内武力最高的未行动武将，直接进入合战界面 |
 | `--battle-plan <cmds>` | — | — | 与 `--attack` / `--defend` 配合，按帧自动执行战术：`charge` / `volley` / `duel` / `retreat` / `hold`，逗号分隔（如 `volley,charge`）；索引相对合战起始帧，用于无头验证胜利、败北、退却、守城与夺城 |
@@ -328,7 +332,17 @@ SDL_VIDEODRIVER=dummy ./bin/yphz_engine --testbench --map -c 30 --frames 2 \
 ./bin/yphz_engine --testbench-action scenario2 --frames 1        # 即时切换剧本
 ./bin/yphz_engine --testbench-action faction1 --frames 1         # 即时切换势力
 
-# 一键无头回归（70 项）
+# 子任务 15：政庁评定格 / 外交调略 / 连续动画
+./bin/yphz_engine --do-cmd charity   -c 30 --faction 0 --frames 1
+./bin/yphz_engine --do-cmd diplomacy -c 30 --faction 0 --frames 1
+./bin/yphz_engine --do-cmd court     -c 30 --faction 0 --frames 1
+./bin/yphz_engine --do-cmd entice    -c 30 --faction 0 --frames 1
+./bin/yphz_engine --do-cmd rumor     -c 30 --faction 0 --frames 1
+./bin/yphz_engine --movie open --frames 20    # 序章 52 块，16 帧后 bank=1
+./bin/yphz_engine --movie end  --frames 20    # 结局 84 块
+./bin/yphz_engine --unified --frames 2        # 天下統一：Enddat 动画 → 结局 CG
+
+# 一键无头回归（80 项）
 tools/run_regression.sh
 ```
 
@@ -842,14 +856,14 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
 | **合战系统** | ✅ 基础闭环已完成：战场背景、双方立绘与兵力/士気/城防、突撃/斉射/一騎討/退却、一騎討特写、夺城/势力转移、天下統一结局；**AI 攻方自动出招、玩家守城战、AI vs AI 自动推演** 已完成；仍无部队编成与战术地图 |
 | **势力 AI** | ✅ 已完成：每月按势力执行内政（徴兵/徴税/開発）与战略出阵（兵力优势判定 + 概率出兵），确定性随机可复现 |
 | **历史事件** | ✅ 年月表（1180/9～1185/3 六个源平合战节点）与落城事件（平泉/屋島）触发 `Mainevt.gp` CG + `Message.gp` 台词；`Mainevt.gp` 事件脚本引擎仍未逆向 |
-| **存档** | ✅ `Savedata.gp` 结构已侦察（10 × 43403 B：年/月头 + 势力表 + 漂移的场景快照）；引擎用自描述原生槽（`Scenario` + `TurnState`，63422 B），支持 `F5`/`F9` 与 `--save`/`--load`，往返状态哈希一致；**原版 `Savedata.gp` 字节读写已实现**（`--import-dos-save` / `--export-dos-save`，槽布局：武将 @ +103、运行块 2070 B、城池 @ +30895、合计 +2137 B 漂移），导入→导出→再导入哈希一致 |
+| **存档** | ✅ `Savedata.gp` 结构已侦察（10 × 43403 B：年/月头 + 势力表 + 漂移的场景快照）；引擎用自描述原生槽（v3：`Scenario` + `TurnState` + 威望/位/势力关系，63655 B；兼容读取 v1/v2），支持 `F5`/`F9` 与 `--save`/`--load`，往返状态哈希一致；**原版 `Savedata.gp` 字节读写已实现**（`--import-dos-save` / `--export-dos-save`，槽布局：武将 @ +103、运行块 2070 B、城池 @ +30895、合计 +2137 B 漂移），导入→导出→再导入哈希一致 |
 | **片头/选势力** | ✅ `Logo.gp` 标题 → 4 剧本选择 → 15 势力大名选择（旗色 + 当主 `Kaodata` 立绘）→ 地图；无跳转类 CLI 参数时自动进入，所有既有 CLI 路径保持不变 |
 | **音频** | **完全未实现**：`Music.gp`/`Opmusic.gp`/`Edmusic.gp` 未解析，FM 驱动 `Fmdrv.com` 未逆向，无 MIDI/音效 |
 | **游戏内文本** | ✅ C 引擎已加载 `Message.gp`（LS11，5 条 / 1305 句）并在底部弹框显示；`--lang zh` 可在终端与屏幕上切换简体中文；`Mainevt.gp` 事件脚本逻辑仍未逆向 |
 | **未解析的数据文件** | `Opendat.gp` / `Enddat.gp` 已确认为**多包 NPK016 容器**（52 / 84 块，`--dump-packs` / `--preview-npk` / 画廊可浏览）；`Disk-*.gp` 卷标已导出（`--dump-disk-labels`）；`Hchikei.gp` 的 100×100 地形网格 + 60 B 布阵表可用 `--dump-chikei` 完整导出；`Maincmd.gp` / `Kisetsu.gp` / `Montage.gp` / `Mainanm.gp` 仍是无块头的裸格式，可用 `--preview-raw --raw-width` 逐宽度侦察；`Mainitem.gp` 已接入 19 件家宝系统；`Hunitpat.gp` / `Mainobj.gp` 已接入裸 4 位平面解码器 |
 | **未逆向的程序** | `Main.exe`/`Genpei.com`/`Open.exe`/`End.exe` 的主循环、菜单、合战逻辑 |
 
-### 四、2200G 上的子任务（1–13 已完成）
+### 四、2200G 上的子任务（1–15 已完成）
 
 > 说明：当前全部渲染为软件 blit（640x400），2200G（Ryzen 3 2200G + Vega 8）完全
 > 够用；以下均不涉及重 GPU/着色器开发，先打通**逻辑层**。
@@ -1217,5 +1231,38 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
 - **验收**：`--dump-packs all` → 52 / 84 块；`--dump-disk-labels` → 5 个卷标；
   `--dump-chikei` → 13 种 id；`--preview-raw Maincmd.gp --raw-width 96` → 96×1275；
   回归 **60 项**全 PASS，`-Wall -Wextra` 零警告。
+
+**子任务 14 — 常驻 HUD 工具栏、新手引导与 F2 快速试验台 — ✅ 已完成**
+- **HUD 工具栏**：战略地图底部 `y=358..378` 新增 8 个可点击按钮：
+  `[政庁] [地図] [家宝 B] [武将] [保存 F5] [読込 F9] [案内 F1] [試験 F2]`；
+  按钮下方保留原状态栏，不遮挡合战指令区（合战按钮在 `y=360..390`）。
+- **新手引导**：`F1` / `[案内]` / 新游戏进入地图后自动打开六页引导
+  （目的、内政、人事、外交、计略、合战），右侧用当前武将 `Kaodata` 立绘，
+  支持 `←/→`、`ENTER`、`ESC` 和按钮点击。
+- **快速试验台**：`F2` / `[試験]` / `--testbench` 可从标题、地图或合战打开；
+  四个分页覆盖内政外交动作、出陣/守城/一騎討/組討/自动决着、8 个历史事件 +
+  `Opendat.gp`/`Enddat.gp` 动画播放器、4 个剧本与 15 个势力即时切换；
+  另含金/兵糧/兵力 MAX 与全员未行动重置作弊。
+- **动画基础**：新增 `include/movie.h` / `src/movie.c`：按 8 帧/块解码
+  `Opendat.gp`（52 块）/ `Enddat.gp`（84 块），每 16 帧轮换 4 组调色板 bank。
+- **验收**：`--testbench` / `--testbench-action max` / `event0` / `movie-open` /
+  `scenario2` / `faction1` 均输出对应 `[TESTBENCH]` / `[MOVIE]` 标记；
+  工具栏点击 `40,368` 打开 `[COUNCIL] open castle=30`；回归 **70 项**全 PASS。
+
+**子任务 15 — 政庁评定格、外交/調略/人事与连续动画 — ✅ 已完成**
+- **政庁评定格**：`Maincmd2.gp`（640×400）作为评定背景，左侧城主 `Kaodata` 立绘，
+  右侧五类分页：内政（開発/徴兵/徴税/施し）、人事（登用/褒美/移動）、
+  外交・朝廷（親善/朝廷献金）、計略（調略/流言）、軍事（出陣/武将/評定終了）；
+  底部实时显示金/兵糧/兵力/士気/城防/威望/位与最低邻国友好度。
+- **命令行动作**：`--do-cmd` 新增 `charity` / `appoint` / `reward` / `diplomacy` /
+  `court` / `entice` / `rumor`，与评定格共用 `turn_run_command()`。
+- **连续动画**：交互式启动先播放 `Opendat.gp` 序章（任意键/点击跳过）→ 标题；
+  天下統一（含 `--unified`）先播放 `Enddat.gp` 84 块结局动画 → 静态结局 CG；
+  两个播放器均轮换调色板 bank，可用 `--movie open|end` 无头验证。
+- **存档 v3**：新增威望、朝廷位、15×15 势力关系；v1/v2 旧档仍可读取。
+- **验收**：评定格点击 `DEVELOP`、`--do-cmd charity|appoint|reward|diplomacy|court|entice|rumor`
+  全部 `ok=1`；`--movie end --frames 20` 命中 `block=2/84 frame=16 palette=1`；
+  `--unified` 命中 `[ENDING] play Enddat.gp blocks=84 frames=672`；
+  回归 **80 项**全 PASS，`-Wall -Wextra` 零警告。
 
 补充（非本期）：**音频**（先逆向 `Fmdrv.com` + `Music.gp` 的 FM 音源格式）仍属后续方向。

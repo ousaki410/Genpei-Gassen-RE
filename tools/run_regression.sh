@@ -219,6 +219,18 @@ check "testbench Opendat player" "\[MOVIE\] start file=Opendat.gp blocks=52 loop
 check "testbench scenario switch" "\[TESTBENCH\] SCENARIO 2 castles=39" --testbench-action scenario2
 check "testbench faction switch" "\[TESTBENCH\] FACTION 1 castle=0 officer=45" --testbench-action faction1
 
+echo "== sub-task 15: council chamber, diplomacy/espionage, animation =="
+check "council click develop"   "\[COUNCIL\] cmd=DEVELOP .*ok=1" --map -c 30 --click 40,368@1 --click 200,92@2 --frames 4
+check "do-cmd charity"          "\[TURN\] CHARITY castle=30 officer=0 ok=1" --do-cmd charity -c 30 --faction 0
+check "do-cmd appoint"          "\[TURN\] APPOINT castle=30 officer=0 ok=1" --do-cmd appoint -c 30 --faction 0
+check "do-cmd reward"           "\[TURN\] REWARD castle=30 officer=0 ok=1" --do-cmd reward -c 30 --faction 0
+check "do-cmd diplomacy"        "\[TURN\] DIPLOMACY castle=30 officer=0 ok=1" --do-cmd diplomacy -c 30 --faction 0
+check "do-cmd court"            "\[TURN\] COURT castle=30 officer=0 ok=1" --do-cmd court -c 30 --faction 0
+check "do-cmd entice"           "\[TURN\] ENTICE castle=30 officer=0 ok=1" --do-cmd entice -c 30 --faction 0
+check "do-cmd rumor"            "\[TURN\] RUMOR castle=30 officer=0 ok=1" --do-cmd rumor -c 30 --faction 0
+check "Enddat animation player" "\[MOVIE\] block=2/84 frame=16 palette=1" --movie end --frames 20
+check "unification plays Enddat" "\[ENDING\] play Enddat.gp blocks=84 frames=672" --unified
+
 echo "-------------------------------------------------------------------"
 printf 'TOTAL %d checks: %d passed, %d failed\n' "$((pass + fail))" "$pass" "$fail"
 [ "$fail" -eq 0 ]

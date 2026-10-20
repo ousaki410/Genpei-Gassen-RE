@@ -724,6 +724,14 @@ static void ending_enter(void) {
     g_ending_mode = true;
     printf("[ENDING] 天下統一 CG: Mainevt.gp block %d (%dx%d)\n",
            s_ending_block, s_ending_img.width, s_ending_img.height);
+
+    // 子任务 15: the unification sequence plays the 84-frame Enddat.gp
+    // animation before the static ending CG. It is skippable like the intro.
+    if (movie_start(&g_movie, MOVIE_KIND_END, false, s_asset_dir)) {
+        g_last_movie_bank = -1;
+        printf("[ENDING] play Enddat.gp blocks=%d frames=%d\n",
+               g_movie.count, g_movie.count * MOVIE_FRAMES_PER_BLOCK);
+    }
 }
 
 static void render_ending(void) {
@@ -1220,16 +1228,7 @@ static void render_battle(const Scenario *sc) {
 
 // ASCII command name for headless logs.
 static const char* turn_cmd_ascii(TurnCommand cmd) {
-    switch (cmd) {
-        case TURN_CMD_DEVELOP:  return "DEVELOP";
-        case TURN_CMD_RECRUIT:  return "RECRUIT";
-        case TURN_CMD_TAX:      return "TAX";
-        case TURN_CMD_MOVE:     return "MOVE";
-        case TURN_CMD_ATTACK:   return "ATTACK";
-        case TURN_CMD_OFFICERS: return "OFFICERS";
-        case TURN_CMD_END:      return "END";
-        default:                return "NONE";
-    }
+    return turn_command_ascii(cmd);
 }
 
 static void print_ai_report(const AiReport *rep) {
@@ -1996,7 +1995,18 @@ int main(int argc, char *argv[]) {
             else if (strcmp(c, "move") == 0)    do_cmd = TURN_CMD_MOVE;
             else if (strcmp(c, "officers") == 0) do_cmd = TURN_CMD_OFFICERS;
             else if (strcmp(c, "end") == 0)     do_cmd = TURN_CMD_END;
-            else fprintf(stderr, "[WARN] unknown --do-cmd '%s' (develop|recruit|tax|move|officers|end)\n", c);
+            else if (strcmp(c, "charity") == 0) do_cmd = TURN_CMD_CHARITY;
+            else if (strcmp(c, "appoint") == 0 ||
+                     strcmp(c, "recruit-officer") == 0)
+                                                do_cmd = TURN_CMD_RECRUIT_OFFICER;
+            else if (strcmp(c, "reward") == 0)  do_cmd = TURN_CMD_REWARD;
+            else if (strcmp(c, "diplomacy") == 0) do_cmd = TURN_CMD_DIPLOMACY;
+            else if (strcmp(c, "court") == 0)   do_cmd = TURN_CMD_COURT;
+            else if (strcmp(c, "entice") == 0)  do_cmd = TURN_CMD_ENTICE;
+            else if (strcmp(c, "rumor") == 0)   do_cmd = TURN_CMD_RUMOR;
+            else fprintf(stderr, "[WARN] unknown --do-cmd '%s' "
+                         "(develop|recruit|tax|move|officers|end|charity|"
+                         "appoint|reward|diplomacy|court|entice|rumor)\n", c);
         } else if (strcmp(argv[i], "--move-to") == 0 && i + 1 < argc) {
             move_to_castle = atoi(argv[++i]);
             if (move_to_castle < 0) move_to_castle = 0;
