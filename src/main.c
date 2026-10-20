@@ -2909,6 +2909,12 @@ int main(int argc, char *argv[]) {
         int act = tb_parse_action(testbench_action);
         if (act != HUD_TB_NONE) {
             run_testbench_action(&tb_ctx, act);
+            // A headless action should show its result: close the overlay for
+            // modal scenes (battle/event/movie) and for scenario/faction jumps.
+            if ((act >= HUD_TB_ATTACK && act <= HUD_TB_AUTO_RESOLVE) ||
+                act >= HUD_TB_EVENT_BASE) {
+                hud_testbench_close(&g_testbench);
+            }
             camera_x = clamp_camera_x(g_scenario.castles[cur_castle].map_x - 320,
                                       map_w);
         } else {
