@@ -1,5 +1,7 @@
 # 执行报告 V2
 
+> 更新：第 6 节已完成，见 `docs/MAIN_EXE_ARCHITECTURE.md`；本文件仍保留第 2~5 节的历史记录。
+
 > 本报告只记录第 2~5 节的结果。第 6 节（写 docs/MAIN_EXE_ARCHITECTURE.md、更新 README、跑完整 regression）按新要求暂缓，等第 2~5 节确认后再开始。
 >
 > 基线核对：`Main.exe` MD5 = `7e7e1b875aa3b07eeb28c2eb5950aac1`。本次没有重新做“是否加壳”的验证。
