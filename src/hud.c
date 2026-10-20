@@ -109,8 +109,8 @@ static void draw_portrait(const ImageDecoded *img, int x, int y) {
 // ---------------------------------------------------------------------------
 
 static const char *const s_button_label[HUD_TOOLBAR_BUTTONS] = {
-    "政庁", "地図", "家宝 B", "武将", "保存 F5", "読込 F9",
-    "案内 F1", "試験 F2"
+    "政庁", "地図", "家宝 B", "武将一覧", "保存 F5", "読込 F9",
+    "案内 F1", "試験台 F2"
 };
 
 static const char *const s_button_ascii[HUD_TOOLBAR_BUTTONS] = {
@@ -316,7 +316,7 @@ static const char *const s_tb_domestic[8] = {
 };
 
 static const char *const s_tb_battle[5] = {
-    "出陣テスト (鎌倉→伊豆)", "守城戦テスト", "一騎討テスト",
+    "出陣テスト (最寄り敵城)", "守城戦テスト", "一騎討テスト",
     "組討テスト", "自動決着テスト"
 };
 
