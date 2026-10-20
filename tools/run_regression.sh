@@ -176,6 +176,24 @@ else
     printf 'FAIL  raw sprite decoder geometry\n'; fail=$((fail + 1))
 fi
 
+echo "== sub-task 12: encoding / localization =="
+check "SJIS->UTF-8 officer dump"   "name=源頼朝"            --dump-officers
+check "zh-Hans officer dump"       "name=源赖朝"            --dump-officers --lang zh
+check "zh-Hans castle dump"        "name=镰仓"              --dump-officers --lang zh
+check "Message.gp UTF-8 dump"      "武将ｦ選択"             --dump-messages
+check "Message.gp zh-Hans dump"    "武将ｦ选择"             --dump-messages --lang zh
+check "encoding backend banner"    "Encoding: iconv:.* lang=zh tables: koei=13212" --dump-officers --lang zh
+check "KOEI legacy code table"     "name=koei .*entries=13212"  --dump-code-table koei
+check "KOEI probe is not cp932"    "probe=0xD19F cp=U.938C"     --dump-code-table koei
+check "GBK table (UTF-8 BOM)"      "name=gbk .*source=utf-8 .*entries=24096" --dump-code-table gbk
+check "Big5 table"                 "name=big5 .*entries=13912"  --dump-code-table big5
+
+if python3 tools/gen_zh_hans_table.py --check 2>&1 | grep -q "zh-Hans table is current"; then
+    printf 'PASS  zh-Hans table matches generator\n'; pass=$((pass + 1))
+else
+    printf 'FAIL  zh-Hans table regeneration\n'; fail=$((fail + 1))
+fi
+
 echo "-------------------------------------------------------------------"
 printf 'TOTAL %d checks: %d passed, %d failed\n' "$((pass + fail))" "$pass" "$fail"
 [ "$fail" -eq 0 ]

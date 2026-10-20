@@ -1,5 +1,6 @@
 #include "hal_video.h"
 #include "sdl_compat.h"
+#include "encoding.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -356,6 +357,16 @@ void hal_video_draw_kanji_16x16(int x, int y, uint8_t s1, uint8_t s2, uint8_t co
 
 void hal_video_draw_text_sjis(int x, int y, const char *sjis_str, uint8_t color_idx) {
     if (!sjis_str) return;
+
+    // 子任务 12: in --lang zh mode the SJIS text is mapped to Simplified
+    // Chinese first, whenever JIS X 0208 carries the simplified glyph. All
+    // characters stay full-width, so the surrounding layout is unchanged.
+    char conv[4096];
+    if (encoding_is_zh()) {
+        encoding_sjis_to_screen(sjis_str, conv, sizeof(conv));
+        sjis_str = conv;
+    }
+
     const uint8_t *p = (const uint8_t*)sjis_str;
     int cur_x = x;
     int cur_y = y;

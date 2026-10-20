@@ -19,8 +19,15 @@
 #include "treasure.h"
 #include "dos_save.h"
 #include "raw_sprite.h"
+#include "encoding.h"
 
 static char s_asset_dir[256] = "games/yphz";
+
+static bool file_exists(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (f) fclose(f);
+    return f != NULL;
+}
 
 static uint8_t* load_file(const char *rel_path, size_t *out_size) {
     char path[512];
@@ -1235,6 +1242,142 @@ static void build_ai_summary(const AiReport *rep, char *dst, size_t n) {
              SJIS_AI_ATTACK, rep->attacks, SJIS_AI_CAPTURE, rep->captures);
 }
 
+// ---------------------------------------------------------------------------
+// 子任务 12: UTF-8 / Simplified Chinese text dumps
+// ---------------------------------------------------------------------------
+
+static void dump_officer_table(const Scenario *sc) {
+    printf("[OFFICERS] scenario=%d date=%d/%d officers=%d castles=%d lang=%s\n",
+           sc->scenario_idx + 1, sc->year, sc->month,
+           sc->num_officers, sc->num_castles, encoding_lang_code());
+
+    for (int i = 0; i < sc->num_officers; i++) {
+        const ScenarioOfficer *o = &sc->officers[i];
+        char name[256], kana[256], faction[128], castle[128];
+
+        encoding_sjis_to_display(o->full_name_sjis, name, sizeof(name));
+
+        const FactionDef *f = (o->faction_id >= 0) ? scenario_get_faction(o->faction_id) : NULL;
+        encoding_sjis_to_display(f ? f->name_sjis : "", faction, sizeof(faction));
+
+        const ScenarioCastle *cs = (o->castle_id >= 0 && o->castle_id < sc->num_castles)
+                                       ? &sc->castles[o->castle_id] : NULL;
+        encoding_sjis_to_display(cs ? cs->name_sjis : "", castle, sizeof(castle));
+
+        char kana_sjis[64];
+        snprintf(kana_sjis, sizeof(kana_sjis), "%s %s", o->family_kana, o->given_kana);
+        encoding_sjis_to_display(kana_sjis, kana, sizeof(kana));
+
+        printf(" %03d name=%s", i, name);
+        if (!encoding_is_zh()) printf(" kana=%s", kana);
+        printf(" faction=%d(%s) castle=%d(%s) age=%d lead=%d war=%d int=%d"
+               " pol=%d cha=%d loyalty=%d troops=%d active=%d\n",
+               o->faction_id, faction, o->castle_id, castle, o->age,
+               o->lead, o->war, o->intel, o->politics, o->charm, o->loyalty,
+               o->troops, o->is_active ? 1 : 0);
+    }
+
+    printf("[CASTLES] count=%d lang=%s\n", sc->num_castles, encoding_lang_code());
+    for (int i = 0; i < sc->num_castles; i++) {
+        const ScenarioCastle *cs = &sc->castles[i];
+        char name[128], kana[128], faction[128], lord[256], circuit[128], conns[64];
+
+        encoding_sjis_to_display(cs->name_sjis, name, sizeof(name));
+        encoding_sjis_to_display(cs->kana, kana, sizeof(kana));
+
+        const FactionDef *f = (cs->faction_id >= 0) ? scenario_get_faction(cs->faction_id) : NULL;
+        encoding_sjis_to_display(f ? f->name_sjis : "", faction, sizeof(faction));
+
+        if (cs->lord_officer_id >= 0 && cs->lord_officer_id < sc->num_officers) {
+            encoding_sjis_to_display(sc->officers[cs->lord_officer_id].full_name_sjis,
+                                     lord, sizeof(lord));
+        } else {
+            snprintf(lord, sizeof(lord), "-");
+        }
+        encoding_sjis_to_display(scenario_get_circuit_name(cs->circuit_id),
+                                 circuit, sizeof(circuit));
+
+        conns[0] = '\0';
+        size_t used = 0;
+        for (int k = 0; k < cs->num_conns && used + 8 < sizeof(conns); k++) {
+            int w = snprintf(conns + used, sizeof(conns) - used, "%s%d",
+                             k ? "," : "", cs->conns[k]);
+            if (w < 0) break;
+            used += (size_t)w;
+        }
+        if (cs->num_conns == 0) snprintf(conns, sizeof(conns), "-");
+
+        printf(" %03d name=%s", i, name);
+        if (!encoding_is_zh()) printf(" kana=%s", kana);
+        printf(" faction=%d(%s) lord=%d(%s) circuit=%d(%s) x=%d y=%d"
+               " rice=%d gold=%d troops=%d defense=%d morale=%d training=%d conns=%s\n",
+               cs->faction_id, faction, cs->lord_officer_id, lord, cs->circuit_id,
+               circuit, cs->map_x, cs->map_y, cs->rice, cs->gold, cs->troops,
+               cs->defense, cs->morale, cs->training, conns);
+    }
+    printf("[OFFICERS] done officers=%d castles=%d\n",
+           sc->num_officers, sc->num_castles);
+}
+
+static void dump_message_table(const MessageFile *msgs) {
+    int total = 0;
+    for (int e = 0; e < msgs->num_entries; e++) total += message_string_count(msgs, e);
+    printf("[MSG] entries=%d strings=%d lang=%s\n",
+           msgs->num_entries, total, encoding_lang_code());
+
+    for (int e = 0; e < msgs->num_entries; e++) {
+        int n = message_string_count(msgs, e);
+        for (int i = 0; i < n; i++) {
+            char sjis[1024];
+            char text[3072];
+            sjis[0] = '\0';
+            message_get_text(msgs, e, i, sjis, sizeof(sjis));
+            encoding_sjis_to_display(sjis, text, sizeof(text));
+            for (char *q = text; *q; q++) {
+                if (*q == '\n') *q = ' '; // keep one dump line per string
+            }
+            printf("[MSG %d:%04d] %s\n", e, i, text);
+        }
+    }
+    printf("[MSG] done entries=%d strings=%d\n", msgs->num_entries, total);
+}
+
+static void dump_code_table(const char *which) {
+    static const struct { const char *name; uint16_t probe; } probes[] = {
+        { "koei", 0xD19F },  // KOEI code for 鎌; cp932 would use 0x8A99
+        { "gbk",  0xB0A1 },  // GBK 啊
+        { "big5", 0xA440 },  // Big5 一
+    };
+    bool found = false;
+    for (int i = 0; i < encoding_table_count(); i++) {
+        const EncodingTableInfo *info = encoding_table_info(i);
+        if (!info) continue;
+        if (strcmp(which, "all") != 0 && strcmp(which, info->name) != 0) continue;
+        found = true;
+        printf("[TABLE] name=%s path=%s source=%s lines=%u entries=%u"
+               " skipped=%u loaded=%d\n",
+               info->name, info->path, info->source_encoding,
+               info->lines, info->entries, info->skipped, info->loaded ? 1 : 0);
+        if (!info->loaded) continue;
+
+        uint16_t probe = 0;
+        for (size_t k = 0; k < sizeof(probes) / sizeof(probes[0]); k++) {
+            if (strcmp(probes[k].name, info->name) == 0) probe = probes[k].probe;
+        }
+        if (probe != 0) {
+            uint32_t cp = encoding_table_lookup(info->name, probe);
+            char u8[8] = {0};
+            if (cp != 0) encoding_utf8_encode(cp, u8, sizeof(u8));
+            printf("[TABLE] probe=0x%04X cp=U+%04X char=%s\n",
+                   probe, cp, cp ? u8 : "?");
+        }
+    }
+    if (!found) {
+        fprintf(stderr, "[WARN] unknown --dump-code-table '%s' (koei|gbk|big5|all)\n",
+                which);
+    }
+}
+
 int main(int argc, char *argv[]) {
     const char *screenshot_path = NULL;
     int max_frames = 0;
@@ -1345,6 +1488,12 @@ int main(int argc, char *argv[]) {
     // 子任务 8: opening flow (title -> scenario -> daimyo -> map).
     OpeningState g_opening;
     memset(&g_opening, 0, sizeof(g_opening));
+
+    // 子任务 12: encoding / localization CLI.
+    bool        dump_officers = false;         // --dump-officers
+    bool        dump_messages = false;         // --dump-messages
+    const char *dump_table = NULL;             // --dump-code-table <koei|gbk|big5|all>
+    const char *plugin_dir = NULL;             // --plugin-dir <dir>
 
     const char *env_dir = getenv("YPHZ_DATA_DIR");
     if (env_dir) {
@@ -1543,7 +1692,45 @@ int main(int argc, char *argv[]) {
             if (gallery_pack >= GALLERY_PACK_COUNT) gallery_pack = GALLERY_PACK_COUNT - 1;
             gallery_mode = true;
             gallery_loaded_pack = -1;
+        } else if (strcmp(argv[i], "--lang") == 0 && i + 1 < argc) {
+            EncodingLang lang;
+            if (encoding_parse_lang(argv[++i], &lang)) {
+                encoding_set_lang(lang);
+            } else {
+                fprintf(stderr, "[WARN] unknown --lang '%s' (ja|zh)\n", argv[i]);
+            }
+        } else if (strcmp(argv[i], "--dump-officers") == 0) {
+            dump_officers = true;
+            if (max_frames == 0) max_frames = 1;
+        } else if (strcmp(argv[i], "--dump-messages") == 0) {
+            dump_messages = true;
+            if (max_frames == 0) max_frames = 1;
+        } else if (strcmp(argv[i], "--dump-code-table") == 0 && i + 1 < argc) {
+            dump_table = argv[++i];
+            if (max_frames == 0) max_frames = 1;
+        } else if (strcmp(argv[i], "--plugin-dir") == 0 && i + 1 < argc) {
+            plugin_dir = argv[++i];
         }
+    }
+
+    // 子任务 12: parse Plugins code tables and announce the text
+    // backend. --lang has already been applied by the argument loop.
+    {
+        char pdir[512];
+        if (plugin_dir) {
+            snprintf(pdir, sizeof(pdir), "%s", plugin_dir);
+        } else if (file_exists("Plugins/koei.txt") || file_exists("Plugins/GBK.txt")) {
+            snprintf(pdir, sizeof(pdir), "Plugins");
+        } else {
+            snprintf(pdir, sizeof(pdir), "%s/../../Plugins", s_asset_dir);
+        }
+        encoding_init(pdir);
+        char summary[160];
+        encoding_table_summary(summary, sizeof(summary));
+        printf("[+] Encoding: %s lang=%s tables: %s zh-hans=%d\n",
+               encoding_backend(), encoding_lang_code(), summary,
+               encoding_zh_hans_count());
+        if (dump_table) dump_code_table(dump_table);
     }
 
     // 子任务 10: resolve the DOS Savedata.gp path (defaults to the asset dir).
@@ -1618,6 +1805,7 @@ int main(int argc, char *argv[]) {
                     gallery_mode || unified_debug ||
                     load_path != NULL || save_path != NULL || dump_state ||
                     show_roads || item_show >= 0 || grant_item >= 0 ||
+                    dump_officers || dump_messages || dump_table != NULL ||
                     dos_import_slot >= 0 || dos_export_slot >= 0 ||
                     scenario_given || castle_given || officer_given ||
                     faction_override >= 0;
@@ -1753,6 +1941,10 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    // 子任务 12: --dump-officers writes every officer and castle as UTF-8
+    // (and as Simplified Chinese under --lang zh).
+    if (dump_officers) dump_officer_table(&g_scenario);
+
     // 8. Load Message.gp dialogue (LS11 text container)
     MessageFile g_messages = {0};
     {
@@ -1765,6 +1957,10 @@ int main(int argc, char *argv[]) {
             printf("[+] Loaded Message.gp: %d LS11 entries (%d strings in entry %d)\n",
                    g_messages.num_entries, message_string_count(&g_messages, 0), 0);
         }
+    }
+    if (dump_messages) {
+        if (g_messages.loaded) dump_message_table(&g_messages);
+        else fprintf(stderr, "[WARN] --dump-messages: Message.gp not loaded\n");
     }
 
     // 9. Turn / domestic state (子任务 3)
@@ -3396,6 +3592,7 @@ int main(int argc, char *argv[]) {
     if (kao_data) free(kao_data);
     if (map_file_data) free(map_file_data);
     message_free(&g_messages);
+    encoding_shutdown();
 
     hal_video_shutdown();
     printf("[+] Engine cleanly stopped.\n");

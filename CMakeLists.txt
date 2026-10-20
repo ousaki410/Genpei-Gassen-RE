@@ -147,7 +147,9 @@ add_executable(yphz_engine
     src/npk.c
     src/dos_save.c
     src/treasure.c
-    src/raw_sprite.c)
+    src/raw_sprite.c
+    src/encoding.c
+    src/zh_hans_table.c)
 
 target_include_directories(yphz_engine PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/include")

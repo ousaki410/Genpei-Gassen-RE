@@ -291,7 +291,15 @@ SDL_VIDEODRIVER=dummy ./bin/yphz_engine --attack 30,29 \
     --battle-plan charge,charge,charge,charge,charge,charge \
     --frames 12 --shot-frame 9 --screenshot /tmp/seize.bmp
 
-# 一键无头回归（38 项）
+# 子任务 12：SJIS(cp932) → UTF-8 文本导出 / 简体中文本地化
+./bin/yphz_engine --dump-officers | head            # 401 武将 + 39 城，UTF-8
+./bin/yphz_engine --dump-officers --lang zh         # 源赖朝 / 镰仓
+./bin/yphz_engine --dump-messages --lang zh | head  # Message.gp 5 条 / 1305 句
+./bin/yphz_engine --dump-code-table koei            # KOEI 旧字体码表（0xD19F = 鎌）
+SDL_VIDEODRIVER=dummy ./bin/yphz_engine --map --lang zh --frames 2 \
+    --screenshot /tmp/zh_map.bmp
+
+# 一键无头回归（49 项）
 tools/run_regression.sh
 ```
 
@@ -803,11 +811,11 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
 | **存档** | ✅ `Savedata.gp` 结构已侦察（10 × 43403 B：年/月头 + 势力表 + 漂移的场景快照）；引擎用自描述原生槽（`Scenario` + `TurnState`，63422 B），支持 `F5`/`F9` 与 `--save`/`--load`，往返状态哈希一致；**原版 `Savedata.gp` 字节读写已实现**（`--import-dos-save` / `--export-dos-save`，槽布局：武将 @ +103、运行块 2070 B、城池 @ +30895、合计 +2137 B 漂移），导入→导出→再导入哈希一致 |
 | **片头/选势力** | ✅ `Logo.gp` 标题 → 4 剧本选择 → 15 势力大名选择（旗色 + 当主 `Kaodata` 立绘）→ 地图；无跳转类 CLI 参数时自动进入，所有既有 CLI 路径保持不变 |
 | **音频** | **完全未实现**：`Music.gp`/`Opmusic.gp`/`Edmusic.gp` 未解析，FM 驱动 `Fmdrv.com` 未逆向，无 MIDI/音效 |
-| **游戏内文本** | ✅ C 引擎已加载 `Message.gp`（LS11，5 条 / 2350 句）并在底部弹框显示；`Mainevt.gp` 事件脚本逻辑仍未逆向 |
+| **游戏内文本** | ✅ C 引擎已加载 `Message.gp`（LS11，5 条 / 1305 句）并在底部弹框显示；`--lang zh` 可在终端与屏幕上切换简体中文；`Mainevt.gp` 事件脚本逻辑仍未逆向 |
 | **未解析的数据文件** | `Maincmd.gp`、`Kisetsu.gp`、`Montage.gp`、`Opendat.gp`、`Enddat.gp`、`Disk-*.gp` 等裸格式未解压；`Mainitem.gp` 已接入 19 件家宝系统（名称/加成/赏赐/缴获）；`Hunitpat.gp` / `Hchikei.gp` / `Mainobj.gp` 已接入裸 4 位平面解码器（16×16 图块 / 208×236 图集），合战画面按兵力绘制双方队形 |
 | **未逆向的程序** | `Main.exe`/`Genpei.com`/`Open.exe`/`End.exe` 的主循环、菜单、合战逻辑 |
 
-### 四、2200G 上的子任务（1–10 已完成）
+### 四、2200G 上的子任务（1–12 已完成）
 
 > 说明：当前全部渲染为软件 blit（640x400），2200G（Ryzen 3 2200G + Vega 8）完全
 > 够用；以下均不涉及重 GPU/着色器开发，先打通**逻辑层**。
@@ -826,7 +834,7 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
 **子任务 2 — 把 `Message.gp`（LS11）与事件文本接入 C 引擎 — ✅ 已完成**
 - 将 `extract_text.py` 的 LS11 解压移植为 C：`decompress.h`/`decompress.c` 的
   `ls11_decompress_stream()`。**逐字节验证**：`Message.gp` 5 条记录的解压输出与
-  Python `entry_*.bin` 完全一致，2350 句文本（cp932→UTF-8 后）与 Python `.txt` 完全一致。
+  Python `entry_*.bin` 完全一致，1305 句文本（cp932→UTF-8 后）与 Python `.txt` 完全一致。
 - 新增 `include/message.h` / `src/message.c`：加载并解压 `Message.gp` 全部条目，
   解析字符串表，`message_get_text()` 输出可直接渲染的 SJIS 显示串。
 - 复用现有 JIS 渲染器，绘制底部光荣风格对话框（半/全角软换行）。
@@ -1117,5 +1125,37 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
 - **验收**：C 与 Python 解码结果**逐像素一致**（`Hunitpat.gp` 12,661 行、
   `Mainobj.gp` 2,045 行全量比对）；合战画面已能显示出清晰的武士队形；
   回归 38 项全 PASS，零警告。
+
+**子任务 12 — 文本编码层：Shift-JIS → UTF-8 与简体中文本地化 — ✅ 已完成**
+- 新增 `include/encoding.h` / `src/encoding.c`：
+  - `encoding_sjis_to_utf8()` / `encoding_utf8_to_sjis()`：通过 glibc iconv 的
+    `CP932`（回退 `SJIS-WIN` / `SHIFT_JIS` / `SJIS`）完成 cp932 ↔ UTF-8 互转，
+    非法/截断字节替换为 `?` 并重新同步；
+  - `encoding_sjis_to_display()`：终端/日志用 UTF-8；`--lang zh` 时逐字映射为简体；
+  - `encoding_sjis_to_screen()`：`JIS.FNT` 绘制路径。简体字**仅当 JIS X 0208 有字形时**
+    才替换，否则保留日文原字（PC-98 字库没有「赖/仓/战」等简体专用字形）；
+    全角宽度不变，界面坐标与布局完全不受影响。
+- 简繁映射表：`tools/gen_zh_hans_table.py` 用 OpenCC 的
+  `JPShinjitaiCharacters.txt`（日文新字体 → 繁体）+ `TSCharacters.txt`（繁 → 简）
+  生成 `src/zh_hans_table.c`（**2097** 条，仅保留 cp932 能表示的汉字）。
+  生成结果随仓库提交，构建无需联网；`--check` 校验表是否过期。
+- `Plugins/*.txt` 码表解析器：
+  - 自动识别容器编码：带 UTF-8 BOM 按 UTF-8，否则按 **GBK/CP936** 解码（不使用 cp932）；
+  - 解析 `<HEX>=<字符>` 记录，按字节码排序并去重；
+  - `koei.txt` 是 **KOEI 旧字体码表，不是 cp932**（`0xD19F` = 鎌，而 cp932 写作 `0x8A99`），
+    只作为 KOEI 文本补丁资料解析；`GBK.txt` = 24096 条 GBK→Unicode；
+    `Big5.txt` = 13912 条 Big5→Unicode。
+- CLI：
+  - `--dump-officers`：401 名武将 + 39 座城的 UTF-8 全量导出
+    （姓名/假名/势力/所属城/能力/兵力/邻接）；
+  - `--dump-messages`：`Message.gp` 5 条 / 1305 句 UTF-8 导出；
+  - `--lang ja|zh`：全局语言切换（终端输出 + 屏幕文本）；
+  - `--dump-code-table koei|gbk|big5|all`：码表统计 + 探针
+    （`0xD19F → U+938C 鎌`、`0xB0A1 → 啊`、`0xA440 → 一`）；
+  - `--plugin-dir <dir>`：指定 `Plugins/` 位置（默认自动探测）。
+- 初始化日志：`[+] Encoding: iconv:CP932 lang=zh tables: koei=13212 gbk=24096 big5=13912 zh-hans=2097`。
+- **验收**：`--dump-officers` 输出 `源頼朝`；`--lang zh` 输出 `源赖朝` / `镰仓`；
+  `--dump-messages --lang zh` 输出 `武将ｦ选择…`；`--lang zh` 截图与原版布局逐像素对齐
+  （仅字形不同）；回归 **49 项**全 PASS，`-Wall -Wextra` 零警告。
 
 补充（非本期）：**音频**（先逆向 `Fmdrv.com` + `Music.gp` 的 FM 音源格式）仍属后续方向。
