@@ -321,8 +321,9 @@ FUN_4000_4fa4(value, slot) -> FUN_4000_4f56(value, slot, 50000)
 - `+0x36/+0x38/+0x3a` 上限 **50000**；
 - `+0x3c` 上限 **100**。
 
-`+0x34` 的上限是 999 这一点与 `src/scenario.h` 注释“morale 0..100”
-不一致；移植代码统一按 300 或 100 截断，属于原型行为。
+`+0x34` 的上限是 999。移植代码现统一使用
+`src/scenario.h` 的 `MAX_CASTLE_MORALE = 999`，`src/turn.c` /
+`src/kassen.c` 的士气写入与战斗 clamp 均按该上限处理。
 
 #### 邻接字段 `+0x12` 的异常
 

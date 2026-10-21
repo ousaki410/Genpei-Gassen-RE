@@ -8,6 +8,9 @@
 #define MAX_CASTLES  39
 #define MAX_SCENARIOS 4
 #define MAX_FACTIONS 15
+// Original castle +0x34 morale setter clamps to 999 (see
+// docs/MAIN_EXE_ARCHITECTURE.md §3.2), not 100.
+#define MAX_CASTLE_MORALE 999
 
 // ---------------------------------------------------------------------------
 // DOS / PC-98 16-bit compact memory layout: byte-level packing, no compiler
@@ -60,7 +63,7 @@ typedef struct {
     int gold;           // Treasury / Funds
     int troops;         // Garrison troop strength
     int defense;        // Castle defense / fortifications (0..1000)
-    int morale;         // Garrison morale (0..100)
+    int morale;         // Garrison morale (0..MAX_CASTLE_MORALE)
     int training;       // Garrison training level (0..100)
     int node_id;        // Node ID on highway graph
     int num_conns;      // Number of adjacent road/sea connections

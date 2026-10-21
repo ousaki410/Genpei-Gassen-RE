@@ -97,7 +97,7 @@ static void clamp_troops(int *v) {
 
 static void clamp_morale(int *v) {
     if (*v < 0) *v = 0;
-    if (*v > 300) *v = 300;
+    if (*v > MAX_CASTLE_MORALE) *v = MAX_CASTLE_MORALE;
 }
 
 static int find_defender(const Scenario *sc, int castle_id, int faction_id) {

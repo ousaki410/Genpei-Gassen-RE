@@ -125,7 +125,7 @@ void turn_cheat_max(TurnState *ts, Scenario *sc, int castle_id) {
     cs->gold = 99999;
     cs->rice = 99999;
     cs->troops = 2000;
-    cs->morale = 300;
+    cs->morale = MAX_CASTLE_MORALE;
     cs->defense = 1000;
     if (ts) {
         ts->prestige = 1000;
@@ -464,7 +464,7 @@ static bool run_council_command(TurnState *ts, Scenario *sc, int faction_id,
             cs->gold -= gold_cost;
             cs->rice -= rice_cost;
             cs->morale += gain;
-            if (cs->morale > 300) cs->morale = 300;
+            if (cs->morale > MAX_CASTLE_MORALE) cs->morale = MAX_CASTLE_MORALE;
             res->d_gold = -gold_cost;
             res->d_rice = -rice_cost;
             res->d_morale = cs->morale - before;
@@ -612,7 +612,8 @@ static bool run_council_command(TurnState *ts, Scenario *sc, int faction_id,
             for (int i = 0; i < sc->num_castles; i++) {
                 if (sc->castles[i].faction_id != faction_id) continue;
                 sc->castles[i].morale += 2;
-                if (sc->castles[i].morale > 300) sc->castles[i].morale = 300;
+                if (sc->castles[i].morale > MAX_CASTLE_MORALE)
+                    sc->castles[i].morale = MAX_CASTLE_MORALE;
                 boost++;
             }
             snprintf(res->text, sizeof(res->text),
