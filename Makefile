@@ -4,7 +4,7 @@ CC ?= gcc
 CFLAGS ?= -Wall -Wextra -O2 -Iinclude -Ithird_party/include/SDL2
 LDFLAGS ?= -Lthird_party/lib -Wl,-rpath,'$$ORIGIN/../third_party/lib' -lSDL2
 
-SRCS = src/hal_video.c src/input.c src/decompress.c src/message.c src/scenario.c src/main.c
+SRCS = $(wildcard src/*.c)
 OBJS = $(SRCS:.c=.o)
 TARGET = bin/yphz_engine
 
