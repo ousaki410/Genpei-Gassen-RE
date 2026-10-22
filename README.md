@@ -433,6 +433,13 @@ python3 tools/probe_gp_files.py --json       # 机器可读（stdout）
 python3 tools/probe_gp_files.py --csv        # 表格导入
 ```
 
+`Main.exe` 运行时 VM 表解析（需要 `capstone` 和 `re_out/runtime_1055_60000.bin`）：
+
+```bash
+python3 tools/dump_vm_opcodes.py \
+  --check-md5 c7728266e406e98e6f24e4bf8f6388a7
+```
+
 ---
 
 ## 资产格式盘点（`games/yphz/`，53 个文件）
