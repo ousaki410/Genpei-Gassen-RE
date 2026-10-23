@@ -1295,3 +1295,26 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
   这些逻辑可能在 Ghidra 解析失败的 3000 段或覆盖层中。
 - **验收**：`cmake --build build --clean-first -j` 零警告；`bash
   tools/run_regression.sh` 80 项全 PASS（0 failed）。
+
+**子任务 17 — V8 运行时布局、对象表与城字段公式 — ✅ 已完成**
+- **离线运行时映射**：新增 `tools/map_runtime_layout.py`，对
+  `re_out/runtime_0000_a0000.bin` 用掩码签名定位 27 个目标/辅助函数，
+  输出 `re_out/v8/runtime_layout.json` 与 `runtime_layout.md`。
+- **两组代码段**：武将/单位访问器运行时 `CS=3B1A`（`static+0x5A3F`，
+  `L_run=static+0x40BDF`）；城池/战略/合战 `CS=43B3`
+  （`static-0x2F44`，`L_run=static+0x40BEC`）。`c07e` 实测
+  `43B3:9140`，比统一公式偏 +6，按入口前 padding 记录。
+- **数据段重定位**：`451a->556f`、`4c1d->5c72`、`4c09->5c5e`、
+  `4cd7->5d2c`、`4f2c->5f81`，全部 `+0x1055`；已由
+  `1697/4eea/45ee/4ea6/6140` 函数体立即数验证。
+- **对象表更正**：`3B1A:1F25/1FA5` 不是表，是 `3B1A:1E88/1F66` 内部的
+  `lcall [bx+0x18]/[bx+0x1c]` 调用点；实际 vtable 为
+  `DS=619F:5DF2`（`+0x18=1E88`、`+0x1c=1F66`），派生 vtable 为
+  `619F:6362`。解析了 `619F:0BF8` 与 `619F:5358` 两张 12 项表，并扫描
+  全镜像 `9A` 远调用、`E8` 近调用与指针表命中。
+- **城字段读写公式**：确认金写入受米上限约束；兵力写/加/减为
+  0..999；训练为 0..100；士气通用 setter 为 0..999，`55b4` 的增加路径
+  另有城防 cap。`src/` 现有实现保持不变，公式与未确认项记录在
+  [`report_summary_v8.md`](report_summary_v8.md)。
+- **验收**：`make clean && make -j$(nproc)` 零警告；`bash
+  tools/run_regression.sh` 80 项全 PASS。
