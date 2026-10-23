@@ -118,4 +118,56 @@ bool scenario_are_adjacent(const Scenario *sc, int a, int b);
 // Number of undirected edges in the road network.
 int scenario_road_edge_count(const Scenario *sc);
 
+
+// ---------------------------------------------------------------------------
+// V9: original binary accessors and clamp rules.
+//
+// Runtime addresses are the real-mode 43B3 group (static 4000:xxxx maps with
+// L_run = static + 0x40BEC).  Only rules re-verified against the runtime image
+// are exposed here; names retain the function offsets so the evidence can be
+// audited in docs/MAIN_EXE_ARCHITECTURE.md and re_out/v9/trace.json.
+// ---------------------------------------------------------------------------
+
+// 43B3 group / static 4000:5362: gold = min(rice, value), floor 0.
+void castle_set_gold_bounded(ScenarioCastle *c, int value);
+// static 4000:5396: gold = min(rice, max(0, gold - amount)).
+void castle_sub_gold(ScenarioCastle *c, int amount);
+// static 4000:53c4: only when rice/5 <= gold:
+//   gold = min(rice, max(rice/5, (gold * param) / 100)).
+// The 597e helper is max (596e is min), so this is the exact branch order.
+void castle_calc_53c4(ScenarioCastle *c, int param);
+
+// static 4000:5436 / 5460 / 5492: troops clamped to 0..999.
+void castle_set_troops(ScenarioCastle *c, int value);
+void castle_add_troops(ScenarioCastle *c, int delta);
+void castle_sub_troops(ScenarioCastle *c, int amount);
+// static 4000:54d6 / 5500 / 5530: training clamped to 0..100.
+void castle_set_training(ScenarioCastle *c, int value);
+void castle_add_training(ScenarioCastle *c, int delta);
+void castle_sub_training(ScenarioCastle *c, int amount);
+// static 4000:558a / 55b4 / 55ea: morale 0..999; 55b4 additionally caps the
+// increase at min(defense, 999).
+void castle_set_morale(ScenarioCastle *c, int value);
+void castle_add_morale_capped_by_def(ScenarioCastle *c, int delta);
+void castle_sub_morale(ScenarioCastle *c, int amount);
+
+// 4000:1887 / 185b / 1871.  The original compares two raw u16 words at
+// officer record +0x1a and +0x1c crosswise:
+//   b_1a == a_1c || a_1a == b_1c.
+// Those two words are runtime fields, not part of the Sndata.gp save record,
+// so the API takes them explicitly instead of inventing struct fields.
+bool officer_same_location_1887(uint16_t a_1a, uint16_t a_1c,
+                                uint16_t b_1a, uint16_t b_1c);
+
+// 4000:1957 / 1977 / 1999: raw officer +0x21 status bits.
+uint16_t officer_status_bits_set_1957(uint16_t bits, uint16_t mask);
+uint16_t officer_status_bits_clear_1977(uint16_t bits, uint16_t mask);
+bool officer_status_bits_test_1999(uint16_t bits, uint16_t mask);
+
+// Semantic engine-side ports used by the turn/AI code.
+int  officer_count_at_castle_5e1a(const Scenario *sc, int castle_id);
+bool officer_same_castle(const ScenarioOfficer *a, const ScenarioOfficer *b);
+bool castle_adjacent_to_faction(const Scenario *sc, int castle_id,
+                                int faction_id);
+
 #endif // YPHZ_SCENARIO_H

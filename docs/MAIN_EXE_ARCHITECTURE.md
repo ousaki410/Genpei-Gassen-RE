@@ -1412,3 +1412,147 @@ ndisasm -b16 -o0x15fb /tmp/15fb.bin
 
 在这些问题解决前，`docs/` 中的“已确认”与 `src/` 中的“原型”必须保持
 区分；不能把移植代码的可玩性当成原版行为的证据。
+
+---
+
+## 10. V9：城池访问器、属性表与合战评估
+
+### 10.1 运行时地址与属性表
+
+V9 继续使用 V8 的两组映射：
+
+- 武将/单位访问器：`CS=3B1A`，`IP=static+0x5A3F`，`L_run=static+0x40BDF`；
+- 城池/战略/合战：`CS=43B3`，`IP=static-0x2F44`，`L_run=static+0x40BEC`。
+
+`619F:0BF8` 与 `619F:5358` 各为 12 个 `seg:off` 远指针：
+
+- `0BF8` 是 getter 表，表项指向 `43B3:2ED6/2F04/26D4/...`；
+- `5358` 是 setter 表，表项指向 `43B3:2630/24DC/257C/2670/251C/25BC`。
+
+对 Ghidra 索引的 `4000` 函数逐条 Capstone 反汇编，没有一条真实指令把
+`0x0BF8` 或 `0x5358` 作为立即数/位移操作数；全镜像原始字节命中也不能
+在真实指令边界解码为这两个操作数。表本身也没有远指针/线性指针引用。
+因此这两张表不是可由静态 C 调用图直接到达的 dispatch table，而应视为
+脚本 VM/属性系统的间接表。V9 不把 wrapper 的调用者误报成表调用者。
+
+### 10.2 `4E8E` 与高层战略覆盖层
+
+46 个 `4E8E` 近调用者全部是城池字段 wrapper，例如：
+
+| wrapper | 字段 |
+|---|---|
+| `4000:5336` | `+0x2a` |
+| `4000:534C` | `+0x2c` |
+| `4000:555E` | `+0x32` |
+| `4000:5574` | `+0x34` |
+
+它们的上一层是复合访问器 `53C4/55B4/5460/5500/5530/55EA/57F8`。这些
+复合访问器在 `4000` 索引中无静态调用者，进一步说明属性表/VM 间接分派。
+
+高层战略逻辑出现在覆盖层 `2285:0006`（线性 `0x22856`）：它调用
+`43B3:2ED6` 遍历候选，读取 `0x920C..0x9212` 战略全局，调用
+`43B3:30FE/20C6/21A8/221E/7350/71B8/5BC8` 做目标评估，失败返回 `-1`。
+完整反汇编在 `re_out/v9/trace.md`。
+
+### 10.3 `53C4` 公式复核
+
+`43B3:2480`（静态 `4000:53C4`）的实际顺序：
+
+1. `di = rice / 5`；
+2. `ax = gold`；
+3. 若 `di > ax` 直接返回；
+4. `v = (gold * param) / 100`；
+5. `v = max(v, rice/5)`（`3B1A:597E` 是 max）；
+6. `set_gold(v)`，setter 为 `min(rice, v)`。
+
+因此：
+
+```c
+if (rice / 5 <= gold)
+    gold = min(rice, max(rice / 5, (gold * param) / 100));
+```
+
+V8 的条件结论成立；用户给出的 `max(gold, param*(rice/5)/100)` 与栈顺序
+不符。`596E=min`、`597E=max` 是本次复核的关键证据。
+
+### 10.4 已落实的城字段 API
+
+`include/scenario.h` / `src/scenario.c`：
+
+- `castle_set_gold_bounded()`：`clamp(value, 0, rice)`；
+- `castle_sub_gold()`：`min(rice, max(0, gold-amount))`；
+- `castle_calc_53c4()`：上述条件公式；
+- `castle_set_troops/add/sub()`：`0..999`；
+- `castle_set_training/add/sub()`：`0..100`；
+- `castle_set_morale()`：`0..999`；
+- `castle_add_morale_capped_by_def()`：上限 `min(defense,999)`，下限 0；
+- `castle_sub_morale()`：下限 0。
+
+原版 `4F56` 只做上限裁剪；移植层额外加 0 下限，避免 C 侧负值进入显示。
+这些 helper 已在内政、征兵、征税、施舍、朝廷、流言与月结算中启用。
+
+### 10.5 武将原始字段
+
+`4000:1887` 的原始条件是：
+
+```c
+b_1a == a_1c || a_1a == b_1c
+```
+
+`+0x1a/+0x1c` 不在 `Sndata.gp` 的 71 字节存档记录中，故 API 显式接收
+四个 `uint16_t`，不向 `ScenarioOfficer` 添加未验证字段：
+
+- `officer_same_location_1887()`；
+- `officer_status_bits_set_1957/clear_1977/test_1999()`；
+- `officer_count_at_castle_5e1a()`（链遍历计数的语义移植）；
+- `castle_adjacent_to_faction()`（引擎层邻接判断）。
+
+`6006` 实际是 39×39 地图初始化/BFS，`704E` 是长战略评估函数；V9 没有
+把二者简化成“同势力/邻接”一行规则。
+
+### 10.6 合战 `8EBA/8C70/C07E`
+
+- `8EBA`：`+0x2f` 为兵力；兵力 0 时士气减 `morale/10`，1..9 时减
+  `morale/50`，>=10 不减。已接入 `kassen_command()`。
+- `8C70`：目标选择门。`3*actor.hp > target.hp`、侧强度、`target.action==5`
+  决定 `threshold=60/0`；类型分为 `2*stat31+stat42`；按 `stat42>70/50`
+  两分支掷 `0..199`。移植为 `kassen_original_target_choice()`。
+- `C07E`：单位步长 `0x37`，每侧最多 10 单位，侧块 `0x226`；对有效单位
+  `+0x2f` 求平均，从第 5 槽累计 `+0x2c`。移植为
+  `kassen_original_side_average_troops()` /
+  `kassen_original_side_reserve_hp()`。
+
+当前引擎仍是单栈合战，单位级 `KassenOriginalUnit` 已建模，但完整 10 单位
+战场尚未接入；`8C70` 的目标门作为独立可测函数提供，没有伪装成现有
+`att_power/def_power` 的原版公式。
+
+### 10.7 `5F81` 81×22 表
+
+`5F81:0000`（线性 `0x5F810`）为 81 项 × 22 字节。本快照中 81 项完全
+相同：
+
+```
+ff ff 00 00 00 00 ff ff ff ff 00 00 00 00 00 00 00 00 00 00 00 00
+```
+
+SHA-256：`52312a10a1477af3a2e1192654de5020d3ac85a7e8d7a05b095332e53308b82c`。
+这是空/未初始化模板表，不能据此编造 81 种兵种字段。精确 1782 字节已
+固化在 `include/kassen_original_templates.h`，由
+`kassen_original_template()` 加载；后续拿到初始化后的镜像时直接替换数据。
+
+### 10.8 复现与验收
+
+```bash
+python3 tools/trace_v9_logic.py
+./bin/yphz_engine --v9-selftest
+bash tools/run_regression.sh
+```
+
+产物：
+
+- `re_out/v9/trace.json` / `trace.md`；
+- `re_out/v9/templates_5f81.json`；
+- `report_summary_v9.md`。
+
+V9 验收：`make clean && make -j$(nproc)` 与 `cmake --build build -j`
+均 0 warnings / 0 errors；回归 93 passed / 0 failed；存档仍为 63655 字节。

@@ -231,6 +231,21 @@ check "do-cmd rumor"            "\[TURN\] RUMOR castle=30 officer=0 ok=1" --do-c
 check "Enddat animation player" "\[MOVIE\] block=2/84 frame=16 palette=1" --movie end --frames 20
 check "unification plays Enddat" "\[ENDING\] play Enddat.gp blocks=84 frames=672" --unified
 
+echo "== sub-task 16 (V9): original castle / battle rules =="
+check "V9 gold set cap"        "\[V9\] gold_set=500" --v9-selftest
+check "V9 gold subtract floor" "\[V9\] gold_sub=300" --v9-selftest
+check "V9 53c4 formula"        "\[V9\] rule53c4=750" --v9-selftest
+check "V9 53c4 branch guard"   "\[V9\] rule53c4_low=100" --v9-selftest
+check "V9 troops max 999"      "\[V9\] troops_set=999" --v9-selftest
+check "V9 training max 100"    "\[V9\] training_set=100" --v9-selftest
+check "V9 morale def cap"      "\[V9\] morale_defcap=300" --v9-selftest
+check "V9 officer 1887"        "\[V9\] officer1887=1" --v9-selftest
+check "V9 officer status bits" "\[V9\] status_bits=0x0018 test=1 clear=0x0008 test2=0" --v9-selftest
+check "V9 5f81 templates"      "\[V9\] templates count=81 size=22 first=ffff0000" --v9-selftest
+check "V9 8eba decay"          "\[V9\] decay0=90 decay5=98 decay10=100" --v9-selftest
+check "V9 c07e side average"   "\[V9\] side_avg=20 reserve_hp=33" --v9-selftest
+check "V9 8c70 target gate"    "\[V9\] target_choice=1" --v9-selftest
+
 echo "-------------------------------------------------------------------"
 printf 'TOTAL %d checks: %d passed, %d failed\n' "$((pass + fail))" "$pass" "$fail"
 [ "$fail" -eq 0 ]

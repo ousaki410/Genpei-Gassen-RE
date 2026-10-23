@@ -146,4 +146,52 @@ const char *kassen_command_name(KassenCommand cmd);   // SJIS label
 const char *kassen_command_ascii(KassenCommand cmd);  // headless log label
 const char *kassen_defense_name(KassenCommand cmd);   // SJIS label (defence set)
 
+
+// ---------------------------------------------------------------------------
+// V9: original battlefield evaluation helpers (43B3 group).
+// ---------------------------------------------------------------------------
+
+#define KASSEN_ORIGINAL_TEMPLATE_COUNT 81
+#define KASSEN_ORIGINAL_TEMPLATE_SIZE  22
+#define KASSEN_ORIGINAL_SIDE_UNITS     10
+#define KASSEN_ORIGINAL_UNIT_STRIDE    55   // 0x37 bytes
+
+// One battle-unit record in the original 43B3 layout.  Only fields actually
+// consumed by 8c70/8eba/c07e are modelled; the remaining bytes are opaque.
+typedef struct {
+    int side;        // +0x10
+    int action;      // +0x24
+    int type;        // +0x28
+    int status;      // +0x2a (0 = inactive)
+    int hp;          // +0x2c
+    int troops;      // +0x2f (byte)
+    int stat31;      // +0x31, already capped by 43B3:07D8
+    int stat42;      // +0x42, already capped by 43B3:07AA
+    int leader_type; // side leader type quoted by 8c70
+} KassenOriginalUnit;
+
+// Exact 81 x 22-byte table copied from runtime 5f81:0000.  Returns NULL for
+// an out-of-range index.  The captured snapshot contains the empty template
+// in all 81 slots; see include/kassen_original_templates.h.
+const uint8_t *kassen_original_template(int index, int *size_out);
+
+// 43B3:5F76 / 4000:8eba.  Zero troops loses 10% morale, 1..9 troops loses
+// 2%, ten or more troops do not decay.  Returns the clamped result.
+int kassen_original_low_troop_decay(int morale, int troops);
+
+// 43B3:5D2C / 4000:8c70.  The target-selection gate.  `side_power[0..1]` is
+// the 0x9496 side-strength pair read by the original; `rng` is advanced for
+// the 0..199 roll.  Returns the original 0/1 decision.
+bool kassen_original_target_choice(const KassenOriginalUnit *actor,
+                                   const KassenOriginalUnit *target,
+                                   int flag, const int side_power[2],
+                                   uint32_t *rng);
+
+// 43B3:9140 / 4000:c07e.  Side statistics: average +0x2f over active units,
+// and the reserve (+0x2c) sum beginning at unit slot 5.
+int kassen_original_side_average_troops(const KassenOriginalUnit *units,
+                                        int count);
+int kassen_original_side_reserve_hp(const KassenOriginalUnit *units,
+                                    int count);
+
 #endif // YPHZ_KASSEN_H

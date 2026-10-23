@@ -1318,3 +1318,27 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
   [`report_summary_v8.md`](report_summary_v8.md)。
 - **验收**：`make clean && make -j$(nproc)` 零警告；`bash
   tools/run_regression.sh` 80 项全 PASS。
+
+**子任务 18 — V9 城池访问器、属性表与合战评估 — ✅ 已完成**
+- **追踪工具**：新增 `tools/trace_v9_logic.py`，在真实指令边界扫描
+  `619F:0BF8/5358` 两张 12 项属性表，聚类 46 个 `4E8E` 城指针 wrapper
+  与 5 个 `5E1A` 远调用点；反汇编 `8C70/8EBA/6140/C07E`，抽取
+  `5F81:0000` 的 81×22 模板表。产物在 `re_out/v9/`。
+- **表结论**：镜像中没有任何真实指令直接引用 `0x0BF8`/`0x5358`；两张表
+  是 VM/属性系统的间接表，不能伪造静态调用者。高层战略目标选择位于覆盖层
+  `2285:0006`，调用 `43B3:2ED6` 与 `30FE/20C6/...` 等评估辅助。
+- **公式复核**：`53C4` 的 `597E` 是 **max**、`596E` 是 **min**；确认
+  `rice/5 <= gold` 时 `gold = min(rice, max(rice/5, gold*param/100))`，
+  纠正此前 `max(gold, ...)` 的写法。
+- **城字段 API**：新增金上限/扣减/`53C4`、兵力 `0..999`、训练 `0..100`、
+  士气 `0..999`、`55B4` 城防 cap；已接入开发、征兵、征税、施舍、朝廷、
+  流言与月结算。存档布局不变（63655 字节）。
+- **武将/战略 helper**：`1887` 原始 `+0x1a/+0x1c` 交叉比较、`+0x21`
+  状态位 `1957/1977/1999`、`5E1A` 链计数语义移植，以及引擎层邻接判断。
+- **合战**：`8EBA` 低兵力士气衰减已进入 `kassen_command()`；`8C70`
+  目标门、`C07E` 侧平均/预备 HP 统计以 `KassenOriginalUnit` 暴露；
+  `5F81` 81×22 空模板精确固化到 `include/kassen_original_templates.h`。
+- **验收**：`make clean && make -j$(nproc)` 与 `cmake --build build -j`
+  零警告；新增 `--v9-selftest`，回归从 80 增至 **93 项全 PASS**。
+  详见 [`report_summary_v9.md`](report_summary_v9.md) 与
+  [`docs/MAIN_EXE_ARCHITECTURE.md`](docs/MAIN_EXE_ARCHITECTURE.md) 第 10 节。

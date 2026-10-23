@@ -277,3 +277,136 @@ int scenario_road_edge_count(const Scenario *sc) {
     }
     return edges;
 }
+
+// ---------------------------------------------------------------------------
+// V9: original castle field accessors (43B3 group)
+// ---------------------------------------------------------------------------
+
+static int clamp_int(int v, int lo, int hi) {
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+}
+
+void castle_set_gold_bounded(ScenarioCastle *c, int value) {
+    if (!c) return;
+    int v = value;
+    if (v < 0) v = 0;
+    if (v > c->rice) v = c->rice;
+    c->gold = v;
+}
+
+void castle_sub_gold(ScenarioCastle *c, int amount) {
+    if (!c) return;
+    if (amount < 0) amount = 0;
+    castle_set_gold_bounded(c, c->gold - amount);
+}
+
+void castle_calc_53c4(ScenarioCastle *c, int param) {
+    if (!c) return;
+    int floor = c->rice / 5;
+    if (floor > c->gold) return;
+    long long scaled = ((long long)c->gold * (long long)param) / 100;
+    int v = (int)scaled;
+    if (v < floor) v = floor;
+    if (v > c->rice) v = c->rice;
+    if (v < 0) v = 0;
+    c->gold = v;
+}
+
+void castle_set_troops(ScenarioCastle *c, int value) {
+    if (!c) return;
+    c->troops = clamp_int(value, 0, 999);
+}
+
+void castle_add_troops(ScenarioCastle *c, int delta) {
+    if (!c) return;
+    castle_set_troops(c, c->troops + delta);
+}
+
+void castle_sub_troops(ScenarioCastle *c, int amount) {
+    if (!c) return;
+    if (amount < 0) amount = 0;
+    castle_set_troops(c, c->troops - amount);
+}
+
+void castle_set_training(ScenarioCastle *c, int value) {
+    if (!c) return;
+    c->training = clamp_int(value, 0, 100);
+}
+
+void castle_add_training(ScenarioCastle *c, int delta) {
+    if (!c) return;
+    castle_set_training(c, c->training + delta);
+}
+
+void castle_sub_training(ScenarioCastle *c, int amount) {
+    if (!c) return;
+    if (amount < 0) amount = 0;
+    castle_set_training(c, c->training - amount);
+}
+
+void castle_set_morale(ScenarioCastle *c, int value) {
+    if (!c) return;
+    c->morale = clamp_int(value, 0, MAX_CASTLE_MORALE);
+}
+
+void castle_add_morale_capped_by_def(ScenarioCastle *c, int delta) {
+    if (!c) return;
+    int cap = clamp_int(c->defense, 0, MAX_CASTLE_MORALE);
+    int v = c->morale + delta;
+    if (v < 0) v = 0;
+    if (v > cap) v = cap;
+    c->morale = v;
+}
+
+void castle_sub_morale(ScenarioCastle *c, int amount) {
+    if (!c) return;
+    if (amount < 0) amount = 0;
+    castle_set_morale(c, c->morale - amount);
+}
+
+bool officer_same_location_1887(uint16_t a_1a, uint16_t a_1c,
+                                uint16_t b_1a, uint16_t b_1c) {
+    return (b_1a == a_1c) || (a_1a == b_1c);
+}
+
+uint16_t officer_status_bits_set_1957(uint16_t bits, uint16_t mask) {
+    return (uint16_t)(bits | mask);
+}
+
+uint16_t officer_status_bits_clear_1977(uint16_t bits, uint16_t mask) {
+    return (uint16_t)(bits & (uint16_t)~mask);
+}
+
+bool officer_status_bits_test_1999(uint16_t bits, uint16_t mask) {
+    return (bits & mask) != 0;
+}
+
+int officer_count_at_castle_5e1a(const Scenario *sc, int castle_id) {
+    if (!sc || castle_id < 0 || castle_id >= sc->num_castles) return 0;
+    int count = 0;
+    for (int i = 0; i < sc->num_officers; i++) {
+        const ScenarioOfficer *o = &sc->officers[i];
+        if (o->is_active && o->castle_id == castle_id) count++;
+    }
+    return count;
+}
+
+bool officer_same_castle(const ScenarioOfficer *a, const ScenarioOfficer *b) {
+    return a && b && a->castle_id >= 0 && a->castle_id == b->castle_id;
+}
+
+bool castle_adjacent_to_faction(const Scenario *sc, int castle_id,
+                                int faction_id) {
+    if (!sc || castle_id < 0 || castle_id >= sc->num_castles) return false;
+    const ScenarioCastle *c = &sc->castles[castle_id];
+    for (int i = 0; i < c->num_conns; i++) {
+        int n = c->conns[i];
+        if (n >= 0 && n < sc->num_castles &&
+            sc->castles[n].faction_id == faction_id) {
+            return true;
+        }
+    }
+    return false;
+}

@@ -461,10 +461,9 @@ static bool run_council_command(TurnState *ts, Scenario *sc, int faction_id,
             }
             int gain = 6 + me->politics / 15;
             int before = cs->morale;
-            cs->gold -= gold_cost;
+            castle_sub_gold(cs, gold_cost);
             cs->rice -= rice_cost;
-            cs->morale += gain;
-            if (cs->morale > MAX_CASTLE_MORALE) cs->morale = MAX_CASTLE_MORALE;
+            castle_add_morale_capped_by_def(cs, gain);
             res->d_gold = -gold_cost;
             res->d_rice = -rice_cost;
             res->d_morale = cs->morale - before;
@@ -611,9 +610,7 @@ static bool run_council_command(TurnState *ts, Scenario *sc, int faction_id,
             int boost = 0;
             for (int i = 0; i < sc->num_castles; i++) {
                 if (sc->castles[i].faction_id != faction_id) continue;
-                sc->castles[i].morale += 2;
-                if (sc->castles[i].morale > MAX_CASTLE_MORALE)
-                    sc->castles[i].morale = MAX_CASTLE_MORALE;
+                castle_add_morale_capped_by_def(&sc->castles[i], 2);
                 boost++;
             }
             snprintf(res->text, sizeof(res->text),
@@ -684,10 +681,9 @@ static bool run_council_command(TurnState *ts, Scenario *sc, int faction_id,
             if (troop_loss > 150) troop_loss = 150;
             if (troop_loss > tc->troops) troop_loss = tc->troops;
             int before = tc->morale;
-            tc->morale -= morale_loss;
-            if (tc->morale < 0) tc->morale = 0;
-            tc->troops -= troop_loss;
-            cs->gold -= cost;
+            castle_sub_morale(tc, morale_loss);
+            castle_sub_troops(tc, troop_loss);
+            castle_sub_gold(cs, cost);
             res->d_gold = -cost;
             res->d_troops = -troop_loss;
             res->d_morale = tc->morale - before;
@@ -732,6 +728,8 @@ bool turn_end(TurnState *ts, Scenario *sc, TurnResult *res) {
         int gold_gain = cs->rice / 50;
         if (gold_gain < 20) gold_gain = 20;
         cs->gold += gold_gain;
+        // 5362: treasury cannot exceed the castle's rice/kokudaka stock.
+        castle_set_gold_bounded(cs, cs->gold);
 
         // Quarterly harvest: rice (kokudaka) grows.
         int rice_gain = 0;
@@ -889,7 +887,7 @@ static bool run_domestic_command(TurnState *ts, Scenario *sc, int faction_id,
             }
             int rice_gain = 100 + o->politics * 3 + o->intel;
             int def_gain = 1 + o->politics / 25;
-            cs->gold -= cost;
+            castle_sub_gold(cs, cost);
             cs->rice += rice_gain;
             cs->defense += def_gain;
 
@@ -926,9 +924,9 @@ static bool run_domestic_command(TurnState *ts, Scenario *sc, int faction_id,
                 return false;
             }
 
-            cs->gold -= gold_cost;
+            castle_sub_gold(cs, gold_cost);
             cs->rice -= rice_cost;
-            cs->troops += gain;
+            castle_add_troops(cs, gain);
 
             res->d_gold = -gold_cost;
             res->d_rice = -rice_cost;
@@ -946,8 +944,7 @@ static bool run_domestic_command(TurnState *ts, Scenario *sc, int faction_id,
             if (loss < 1) loss = 1;
             int before = cs->morale;
             cs->gold += income;
-            cs->morale -= loss;
-            if (cs->morale < 0) cs->morale = 0;
+            castle_sub_morale(cs, loss);
 
             res->d_gold = income;
             res->d_morale = cs->morale - before;

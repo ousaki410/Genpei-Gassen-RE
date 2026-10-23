@@ -229,6 +229,14 @@ bool kassen_command(KassenState *ks, Scenario *sc, KassenCommand cmd) {
     const ScenarioOfficer *d = (ks->defender_officer >= 0)
                                    ? &sc->officers[ks->defender_officer] : NULL;
 
+    // V9 / 8eba: low-strength units decay before the exchange.  The original
+    // applies this per 55-byte unit record; the single-stack battle uses the
+    // same rule on each side's aggregate troop count.
+    ks->att_morale = kassen_original_low_troop_decay(ks->att_morale,
+                                                     ks->att_troops);
+    ks->def_morale = kassen_original_low_troop_decay(ks->def_morale,
+                                                     ks->def_troops);
+
     int a_lead = a ? a->lead : 40;
     int a_war = a ? a->war : 40;
     int a_intel = a ? a->intel : 40;
@@ -466,8 +474,8 @@ void kassen_apply_result(KassenState *ks, Scenario *sc) {
     if (!ks->victory) {
         // Survivors return home (half of them on a rout, everyone on retreat).
         int survivors = ks->retreated ? ks->att_troops : ks->att_troops / 2;
-        from->troops = ks->home_troops + survivors;
-        if (from->troops < 20) from->troops = 20;
+        castle_set_troops(from, ks->home_troops + survivors);
+        if (from->troops < 20) castle_set_troops(from, 20);
         ks->active = false;
         return;
     }
@@ -498,8 +506,8 @@ void kassen_apply_result(KassenState *ks, Scenario *sc) {
     // Castle changes hands.
     to->faction_id = from->faction_id;
     to->lord_officer_id = ks->attacker_officer;
-    to->troops = ks->att_troops;
-    to->morale = ks->att_morale;
+    castle_set_troops(to, ks->att_troops);
+    castle_set_morale(to, ks->att_morale);
     if (to->defense > 0) {
         to->defense = ks->defense;
     } else {
@@ -516,8 +524,8 @@ void kassen_apply_result(KassenState *ks, Scenario *sc) {
     }
 
     // Keep some troops at home; if the lord marched out, appoint a new lord.
-    from->troops = ks->home_troops;
-    if (from->troops < 20) from->troops = 20;
+    castle_set_troops(from, ks->home_troops);
+    if (from->troops < 20) castle_set_troops(from, 20);
     if (from->lord_officer_id == ks->attacker_officer) {
         int new_lord = -1;
         for (int i = 0; i < sc->num_officers; i++) {
@@ -677,4 +685,103 @@ void kassen_units_draw(int att_troops, int def_troops,
                                    KASSEN_UNIT_TILE_W, KASSEN_UNIT_TILE_H,
                                    px, KASSEN_UNIT_TILE_W, 0);
     }
+}
+
+// ---------------------------------------------------------------------------
+// V9: original battlefield helpers (43B3 group)
+// ---------------------------------------------------------------------------
+
+#include "kassen_original_templates.h"
+
+const uint8_t *kassen_original_template(int index, int *size_out) {
+    if (index < 0 || index >= KASSEN_ORIGINAL_TEMPLATE_COUNT) return NULL;
+    if (size_out) *size_out = KASSEN_ORIGINAL_TEMPLATE_SIZE;
+    return kassen_original_templates[index];
+}
+
+int kassen_original_low_troop_decay(int morale, int troops) {
+    if (morale <= 0) return 0;
+    if (troops == 0) morale -= morale / 10;
+    else if (troops < 10) morale -= morale / 50;
+    if (morale < 0) morale = 0;
+    return morale;
+}
+
+static uint32_t original_roll(uint32_t *rng, uint32_t limit) {
+    if (!rng || limit == 0) return 0;
+    uint32_t x = *rng;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    if (x == 0) x = 0x9e3779b9u;
+    *rng = x;
+    return x % limit;
+}
+
+bool kassen_original_target_choice(const KassenOriginalUnit *actor,
+                                   const KassenOriginalUnit *target,
+                                   int flag, const int side_power[2],
+                                   uint32_t *rng) {
+    if (!actor || !target || !side_power || !rng) return false;
+
+    int a_side = (actor->side != 0) ? 1 : 0;
+    int own = side_power[a_side];
+    int enemy = side_power[1 - a_side];
+    int threshold;
+
+    // The first block replaces the opposite-side strength with either 0 or 60.
+    if (actor->hp * 3 > target->hp &&
+        (enemy >> 1) < own &&
+        target->action == 5 &&
+        (enemy * 2 <= own) &&
+        actor->hp <= target->hp) {
+        threshold = 60;
+    } else {
+        threshold = 0;
+    }
+
+    // 8c70's type score is 2*stat31 + stat42; flag==0 doubles both scores.
+    int actor_type_score = actor->stat31 * 2 + actor->stat42;
+    int target_type_score = target->stat31 * 2 + target->stat42;
+    if (flag == 0) {
+        actor_type_score *= 2;
+        target_type_score *= 2;
+    }
+
+    int roll = (int)original_roll(rng, 200) + target_type_score;
+    int base;
+    if (actor->leader_type == actor->type) {
+        if (actor->stat42 <= 70) return false;
+        base = (flag == 1) ? 0x28 : 0x3c;
+        base += threshold + actor_type_score;
+    } else {
+        if (actor->stat42 <= 50) return false;
+        base = (flag == 1) ? 0x3c : 0x50;
+        base += threshold * 2 + actor_type_score;
+    }
+    return base > roll;
+}
+
+int kassen_original_side_average_troops(const KassenOriginalUnit *units,
+                                        int count) {
+    if (!units || count <= 0) return 0;
+    int total = 0;
+    int active = 0;
+    for (int i = 0; i < count; i++) {
+        if (units[i].status == 0) continue;
+        total += units[i].troops;
+        active++;
+    }
+    return active ? total / active : 0;
+}
+
+int kassen_original_side_reserve_hp(const KassenOriginalUnit *units,
+                                    int count) {
+    if (!units || count <= 0) return 0;
+    int total = 0;
+    for (int i = 5; i < count; i++) {
+        if (units[i].status == 0) continue;
+        total += units[i].hp;
+    }
+    return total;
 }

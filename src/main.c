@@ -1785,6 +1785,93 @@ static int tb_parse_action(const char *name) {
     return HUD_TB_NONE;
 }
 
+static void v9_selftest_run(void) {
+    ScenarioCastle c;
+    memset(&c, 0, sizeof(c));
+
+    c.rice = 500; c.gold = 100;
+    castle_set_gold_bounded(&c, 800);
+    printf("[V9] gold_set=%d\n", c.gold);
+
+    c.rice = 500; c.gold = 400;
+    castle_sub_gold(&c, 100);
+    printf("[V9] gold_sub=%d\n", c.gold);
+
+    c.rice = 1000; c.gold = 500;
+    castle_calc_53c4(&c, 150);
+    printf("[V9] rule53c4=%d\n", c.gold);
+    c.gold = 100;
+    castle_calc_53c4(&c, 150);
+    printf("[V9] rule53c4_low=%d\n", c.gold);
+
+    c.troops = 1200;
+    castle_set_troops(&c, c.troops);
+    printf("[V9] troops_set=%d\n", c.troops);
+    castle_add_troops(&c, 20);
+    printf("[V9] troops_add=%d\n", c.troops);
+    castle_sub_troops(&c, 1000);
+    printf("[V9] troops_sub=%d\n", c.troops);
+
+    c.training = 120;
+    castle_set_training(&c, c.training);
+    printf("[V9] training_set=%d\n", c.training);
+    castle_add_training(&c, 10);
+    printf("[V9] training_add=%d\n", c.training);
+    castle_sub_training(&c, 200);
+    printf("[V9] training_sub=%d\n", c.training);
+
+    c.defense = 300; c.morale = 250;
+    castle_add_morale_capped_by_def(&c, 100);
+    printf("[V9] morale_defcap=%d\n", c.morale);
+    castle_sub_morale(&c, 100);
+    printf("[V9] morale_sub=%d\n", c.morale);
+    castle_set_morale(&c, 1200);
+    printf("[V9] morale_set=%d\n", c.morale);
+
+    printf("[V9] officer1887=%d\n",
+           officer_same_location_1887(1, 2, 2, 9) ? 1 : 0);
+    uint16_t bits = officer_status_bits_set_1957(0x0008, 0x0010);
+    printf("[V9] status_bits=0x%04X test=%d clear=0x%04X test2=%d\n",
+           bits, officer_status_bits_test_1999(bits, 0x0010) ? 1 : 0,
+           officer_status_bits_clear_1977(bits, 0x0010),
+           officer_status_bits_test_1999(
+               officer_status_bits_clear_1977(bits, 0x0010), 0x0010) ? 1 : 0);
+
+    int size = 0;
+    const uint8_t *tpl = kassen_original_template(0, &size);
+    printf("[V9] templates count=%d size=%d first=%02x%02x%02x%02x\n",
+           KASSEN_ORIGINAL_TEMPLATE_COUNT, size,
+           tpl ? tpl[0] : 0, tpl ? tpl[1] : 0,
+           tpl ? tpl[2] : 0, tpl ? tpl[3] : 0);
+
+    printf("[V9] decay0=%d decay5=%d decay10=%d\n",
+           kassen_original_low_troop_decay(100, 0),
+           kassen_original_low_troop_decay(100, 5),
+           kassen_original_low_troop_decay(100, 10));
+
+    KassenOriginalUnit units[10];
+    memset(units, 0, sizeof(units));
+    units[0].status = 1; units[0].troops = 10; units[0].hp = 11;
+    units[1].status = 1; units[1].troops = 20; units[1].hp = 22;
+    units[5].status = 1; units[5].troops = 30; units[5].hp = 33;
+    printf("[V9] side_avg=%d reserve_hp=%d\n",
+           kassen_original_side_average_troops(units, 10),
+           kassen_original_side_reserve_hp(units, 10));
+
+    KassenOriginalUnit actor;
+    memset(&actor, 0, sizeof(actor));
+    actor.side = 0; actor.type = 1; actor.leader_type = 1;
+    actor.action = 1; actor.status = 1; actor.hp = 100;
+    actor.stat31 = 100; actor.stat42 = 100;
+    KassenOriginalUnit target = actor;
+    target.side = 1; target.action = 5; target.hp = 100;
+    target.stat31 = 0; target.stat42 = 0;
+    int power[2] = {100, 100};
+    uint32_t rng = 1;
+    printf("[V9] target_choice=%d\n",
+           kassen_original_target_choice(&actor, &target, 1, power, &rng) ? 1 : 0);
+}
+
 int main(int argc, char *argv[]) {
     const char *screenshot_path = NULL;
     int max_frames = 0;
@@ -1920,6 +2007,7 @@ int main(int argc, char *argv[]) {
     movie_init(&g_movie);
 
     // 子任务 12: encoding / localization CLI.
+    bool        v9_selftest = false;           // --v9-selftest
     bool        dump_officers = false;         // --dump-officers
     bool        dump_messages = false;         // --dump-messages
     const char *dump_table = NULL;             // --dump-code-table <koei|gbk|big5|all>
@@ -2181,6 +2269,8 @@ int main(int argc, char *argv[]) {
             } else {
                 fprintf(stderr, "[WARN] unknown --lang '%s' (ja|zh)\n", argv[i]);
             }
+        } else if (strcmp(argv[i], "--v9-selftest") == 0) {
+            v9_selftest = true;
         } else if (strcmp(argv[i], "--dump-officers") == 0) {
             dump_officers = true;
             if (max_frames == 0) max_frames = 1;
@@ -2193,6 +2283,11 @@ int main(int argc, char *argv[]) {
         } else if (strcmp(argv[i], "--plugin-dir") == 0 && i + 1 < argc) {
             plugin_dir = argv[++i];
         }
+    }
+
+    if (v9_selftest) {
+        v9_selftest_run();
+        return 0;
     }
 
     // 子任务 12: parse Plugins code tables and announce the text
