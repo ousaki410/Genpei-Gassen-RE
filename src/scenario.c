@@ -410,3 +410,132 @@ bool castle_adjacent_to_faction(const Scenario *sc, int castle_id,
     }
     return false;
 }
+
+// ---------------------------------------------------------------------------
+// V10: strategic distance / nearest-castle helpers (43B3 group).
+//
+// 43B3:301C (static 4000:5F60) is a breadth-first search over the seven
+// castle record slots at +0x12..+0x1e.  It zeroes a 39-byte visited array
+// (544F:04AC), seeds the queue with the start castle, and expands one frontier
+// layer per depth value.  A neighbour equal to the goal returns the current
+// depth immediately; the starting castle itself returns 0.  After depth 200
+// it gives up with 0xFF.
+//
+// 43B3:30C2 (4000:6006) calls 301C for every (row, col) pair and stores the
+// low byte in a 39x39 matrix at ES:[0x7BFA].
+//
+// 43B3:3114 (4000:6058) and 43B3:3158 (4000:609C) scan the same matrix.  Both
+// keep the first castle with the strictly smallest byte distance, so ties are
+// resolved by the lowest castle id.
+// ---------------------------------------------------------------------------
+
+int scenario_castle_distance(const Scenario *sc, int from, int to) {
+    if (!sc) return CASTLE_DIST_UNREACHABLE;
+    const int n = sc->num_castles;
+    if (n <= 0 || n > MAX_CASTLES) return CASTLE_DIST_UNREACHABLE;
+    if (from < 0 || from >= n || to < 0 || to >= n) {
+        return CASTLE_DIST_UNREACHABLE;
+    }
+    if (from == to) return 0;
+
+    uint8_t visited[MAX_CASTLES];
+    uint16_t queue[MAX_CASTLES];
+    memset(visited, 0, sizeof(visited));
+
+    int head = 0;
+    int tail = 1;
+    queue[0] = (uint16_t)from;
+    visited[from] = 1;
+
+    // The original names this byte "depth" and starts it at 1: the start
+    // castle is distance 0 and its direct neighbours are distance 1.
+    for (int depth = 1; depth <= 200; depth++) {
+        const int level_end = tail;
+        while (head < level_end) {
+            const int node = queue[head++];
+            const ScenarioCastle *c = &sc->castles[node];
+            for (int k = 0; k < c->num_conns; k++) {
+                const int nb = c->conns[k];
+                if (nb < 0 || nb >= n) continue;
+                if (nb == to) return depth;
+                if (visited[nb]) continue;
+                visited[nb] = 1;
+                if (tail < MAX_CASTLES) queue[tail++] = (uint16_t)nb;
+            }
+        }
+        if (head >= tail) break; // graph exhausted before the target
+    }
+    return CASTLE_DIST_UNREACHABLE;
+}
+
+bool scenario_castle_distance_matrix(const Scenario *sc, uint8_t *out,
+                                     int out_rows, int out_cols) {
+    if (!sc || !out) return false;
+    const int n = sc->num_castles;
+    if (n <= 0 || n > MAX_CASTLES) return false;
+    if (out_rows < n || out_cols < n) return false;
+
+    for (int r = 0; r < n; r++) {
+        for (int c = 0; c < n; c++) {
+            out[r * out_cols + c] =
+                (uint8_t)scenario_castle_distance(sc, r, c);
+        }
+    }
+    return true;
+}
+
+int scenario_nearest_friendly_castle(const Scenario *sc, int faction,
+                                     int source_castle) {
+    if (!sc) return -1;
+    const int n = sc->num_castles;
+    if (n <= 0 || n > MAX_CASTLES) return -1;
+    if (source_castle < 0 || source_castle >= n) return -1;
+
+    uint8_t matrix[MAX_CASTLES * MAX_CASTLES];
+    if (!scenario_castle_distance_matrix(sc, matrix, MAX_CASTLES,
+                                         MAX_CASTLES)) {
+        return -1;
+    }
+
+    int best = -1;
+    uint8_t best_dist = CASTLE_DIST_UNREACHABLE;
+    for (int i = 0; i < n; i++) {
+        if (sc->castles[i].faction_id != faction) continue;
+        // 43B3:30FE is called as (i, source), i.e. matrix[i][source].
+        const uint8_t d = matrix[i * MAX_CASTLES + source_castle];
+        if (d >= best_dist) continue;
+        best_dist = d;
+        best = i;
+    }
+    return best;
+}
+
+int scenario_nearest_enemy_castle(const Scenario *sc, int faction,
+                                  int source_castle) {
+    if (!sc) return -1;
+    const int n = sc->num_castles;
+    if (n <= 0 || n > MAX_CASTLES) return -1;
+    if (source_castle < 0 || source_castle >= n) return -1;
+    // 43B3:3158 returns -1 immediately when the faction id is 0xFFFF.
+    if (faction == -1) return -1;
+
+    uint8_t matrix[MAX_CASTLES * MAX_CASTLES];
+    if (!scenario_castle_distance_matrix(sc, matrix, MAX_CASTLES,
+                                         MAX_CASTLES)) {
+        return -1;
+    }
+
+    int best = -1;
+    uint8_t best_dist = CASTLE_DIST_UNREACHABLE;
+    for (int i = 0; i < n; i++) {
+        const int owner = sc->castles[i].faction_id;
+        // 43B3:3158 skips unowned castles and the actor's own faction.
+        if (owner == -1) continue;
+        if (owner == faction) continue;
+        const uint8_t d = matrix[i * MAX_CASTLES + source_castle];
+        if (d >= best_dist) continue;
+        best_dist = d;
+        best = i;
+    }
+    return best;
+}

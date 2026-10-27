@@ -170,4 +170,52 @@ bool officer_same_castle(const ScenarioOfficer *a, const ScenarioOfficer *b);
 bool castle_adjacent_to_faction(const Scenario *sc, int castle_id,
                                 int faction_id);
 
+// ---------------------------------------------------------------------------
+// V10: strategic distance / nearest-castle helpers (43B3 group).
+//
+// These are static ports of the original routines below.  The runtime image
+// addresses are the real-mode CS:IP values; the Ghidra/static address is the
+// same code with IP + 0x2F44 (e.g. 43B3:301C == 4000:5F60).
+//
+//   scenario_castle_distance          43B3:301C / 4000:5F60
+//   scenario_castle_distance_matrix   43B3:30C2 / 4000:6006
+//   scenario_nearest_friendly_castle  43B3:3114 / 4000:6058
+//   scenario_nearest_enemy_castle     43B3:3158 / 4000:609C
+//
+// The original graph edges are castle record +0x12..+0x1e (seven u16 slots);
+// Sndata.gp slot 0 at +0x10 is a reserved flag, not a neighbour.  The parsed
+// ScenarioCastle.conns[] already holds exactly those seven slots.
+//
+// Confidence: B (runtime disassembly verified, no DOSBox-X dynamic trace).
+// The BFS frontier order and the 200-level limit follow the original; see
+// report_summary_v10.md for the instruction-level evidence.
+// ---------------------------------------------------------------------------
+
+#define CASTLE_DIST_UNREACHABLE 0xFF
+
+// Exact port of 4000:5F60.  Returns 0 for the same castle, the BFS depth for
+// a reachable castle, and CASTLE_DIST_UNREACHABLE when the graph is exhausted
+// (the original also returns 0xFF past depth 200).  Invalid ids return
+// CASTLE_DIST_UNREACHABLE; the original has no unified bounds check.
+int scenario_castle_distance(const Scenario *sc, int from, int to);
+
+// Exact port of 4000:6006.  Fills out[row * out_cols + col] with the byte
+// distance matrix.  out_rows/out_cols must both be >= sc->num_castles; the
+// original always writes a 39x39 byte matrix.
+bool scenario_castle_distance_matrix(const Scenario *sc, uint8_t *out,
+                                     int out_rows, int out_cols);
+
+// Exact port of 4000:6058.  Argument order follows the original stack frame:
+// [bp+6] = faction id, [bp+8] = source castle.  Scans castles 0..38, keeps the
+// first castle of `faction` with the smallest matrix[castle][source] byte and
+// skips unreachable (0xFF) entries.  Returns -1 when no castle matches.
+int scenario_nearest_friendly_castle(const Scenario *sc, int faction,
+                                     int source_castle);
+
+// Exact port of 4000:609C.  [bp+6] = faction id, [bp+8] = source castle.
+// Skips castles with faction_id == -1 (the original's 0xFFFF) and castles of
+// the given faction; keeps the first minimum matrix[castle][source] byte.
+int scenario_nearest_enemy_castle(const Scenario *sc, int faction,
+                                  int source_castle);
+
 #endif // YPHZ_SCENARIO_H

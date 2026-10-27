@@ -1,0 +1,106 @@
+== sub-task 1-6: map / domestic / battle ==
+PASS  map turn-state
+PASS  faction override
+PASS  select-castle
+PASS  develop
+PASS  recruit
+PASS  tax
+PASS  end turn
+PASS  move adjacent
+PASS  move non-adjacent reject
+PASS  officer roster
+PASS  attack capture
+PASS  attack non-adjacent
+PASS  defend
+PASS  defend non-adjacent
+PASS  battle retreat
+== sub-task 7: AI / events ==
+PASS  ai-step
+PASS  trigger-event
+PASS  unified ending
+== sub-task 5/2: gallery / message ==
+PASS  gallery
+PASS  preview-npk
+PASS  test-msg
+== sub-task 8: save / load / opening ==
+PASS  save size
+PASS  opening flow
+PASS  opening not leaked
+PASS  save/load round-trip (hash=0xe9f8ae76)
+== sub-task 9: road network + 家宝 ==
+PASS  show-roads
+PASS  show-item 0
+PASS  show-item 5
+PASS  grant-item
+PASS  grant-item foreign fails
+PASS  seize heirloom
+PASS  road graph symmetric + connected
+== sub-task 10: DOS save slots + raw 4-plane sprites ==
+PASS  DOS save slot round-trip (hash=0x395ad8af)
+PASS  raw 4-plane unit bank
+PASS  raw 4-plane preview
+PASS  raw 4-plane sheet
+PASS  raw layout solver finds 12-byte stride
+PASS  raw sprite decoder geometry
+== sub-task 12: encoding / localization ==
+PASS  SJIS->UTF-8 officer dump
+PASS  zh-Hans officer dump
+PASS  zh-Hans castle dump
+PASS  Message.gp UTF-8 dump
+PASS  Message.gp zh-Hans dump
+PASS  encoding backend banner
+PASS  KOEI legacy code table
+PASS  KOEI probe is not cp932
+PASS  GBK table (UTF-8 BOM)
+PASS  Big5 table
+PASS  zh-Hans table matches generator
+== sub-task 13: multi-pack NPK, palette banks, disk labels, raw inspector ==
+PASS  Opendat multi-pack
+PASS  Enddat multi-pack
+PASS  Opendat block geometry
+PASS  palette main bank 2
+PASS  palette lose bank 3
+PASS  Opendat palette preview
+PASS  disk volume labels
+PASS  chikei 100x100 grid
+PASS  chikei terrain ids
+PASS  raw width inspector
+PASS  raw tile bank inspector
+== sub-task 14: HUD toolbar, onboarding, testbench ==
+PASS  HUD council button
+PASS  council chamber opens
+PASS  onboarding guide
+PASS  testbench opens
+PASS  testbench max cheat
+PASS  testbench action reset
+PASS  testbench historical event
+PASS  testbench Opendat player
+PASS  testbench scenario switch
+PASS  testbench faction switch
+== sub-task 15: council chamber, diplomacy/espionage, animation ==
+PASS  council click develop
+PASS  do-cmd charity
+PASS  do-cmd appoint
+PASS  do-cmd reward
+PASS  do-cmd diplomacy
+PASS  do-cmd court
+PASS  do-cmd entice
+PASS  do-cmd rumor
+PASS  Enddat animation player
+PASS  unification plays Enddat
+== sub-task 16 (V9): original castle / battle rules ==
+PASS  V9 gold set cap
+PASS  V9 gold subtract floor
+PASS  V9 53c4 formula
+PASS  V9 53c4 branch guard
+PASS  V9 troops max 999
+PASS  V9 training max 100
+PASS  V9 morale def cap
+PASS  V9 officer 1887
+PASS  V9 officer status bits
+PASS  V9 5f81 templates
+PASS  V9 8eba decay
+PASS  V9 c07e side average
+PASS  V9 8c70 target gate
+-------------------------------------------------------------------
+TOTAL 93 checks: 93 passed, 0 failed

@@ -246,6 +246,19 @@ check "V9 8eba decay"          "\[V9\] decay0=90 decay5=98 decay10=100" --v9-sel
 check "V9 c07e side average"   "\[V9\] side_avg=20 reserve_hp=33" --v9-selftest
 check "V9 8c70 target gate"    "\[V9\] target_choice=1" --v9-selftest
 
+echo "== sub-task 17 (V10): strategic distance / adjacent-target selector =="
+check "V10 distance basics"     "\[V10\] dist same=0 adj=1 chain=4 unreachable=255 rev=4" --v10-selftest
+check "V10 matrix bytes"        "\[V10\] matrix ok=1 0_2=2 5_0=255 4_3=1" --v10-selftest
+check "V10 matrix invariants"   "\[V10\] matrix sym=1 diag=1 max=5 unreachable_pairs=1282" --v10-selftest
+check "V10 nearest friendly"    "\[V10\] friend tie=0 f1=1 unreachable=-1 badsrc=-1" --v10-selftest
+check "V10 nearest enemy"       "\[V10\] enemy from0=1 from6=8 unowned_src=8 badfac=-1" --v10-selftest
+check "V10 selector accepts own" "\[V10\] select basic=11 ref=11 dist=0 officers=2" --v10-selftest
+check "V10 selector score tie"  "\[V10\] select score_tie=17 ratio=5" --v10-selftest
+check "V10 selector unowned"    "\[V10\] select unowned=22 ref=25 dist=1" --v10-selftest
+check "V10 selector stays put"  "\[V10\] select stay=-1" --v10-selftest
+check "V10 selector guards"  "\[V10\] select no_officers=-1 guards=-1,-1,-1,-1,-1,-1,-1" --v10-selftest
+check "V10 real scenario check" "\[V10\] real d30_29=1 d30_0=13 friend30=30 enemy30=27" --v10-selftest
+
 echo "-------------------------------------------------------------------"
 printf 'TOTAL %d checks: %d passed, %d failed\n' "$((pass + fail))" "$pass" "$fail"
 [ "$fail" -eq 0 ]

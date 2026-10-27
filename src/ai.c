@@ -172,3 +172,127 @@ void ai_run_turn(TurnState *ts, Scenario *sc, AiReport *report) {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// V10: strategic adjacent-target selector (linear 0x22856).
+//
+// The disassembly of 0x22856..0x229A5 establishes the complete control flow:
+//   - 5E1A(actor) == 0, refA == -1, refB == -1, actor faction == -1,
+//     actor == refA, or route source == -1  -> return -1;
+//   - best_ref = (matrix[actor][refB] <= matrix[actor][refA]) ? refB : refA;
+//   - initial best = (officers(actor), min distance, 0x9216);
+//   - each of the seven adjacency slots is rejected on -1, on a foreign owner
+//     that is not 0xFFFF, or on officers >= 15;
+//   - candidates are compared as (distance, officers, ratio), smallest wins;
+//   - only a strict improvement over the actor is accepted.
+//
+// The original ratio comes from 28FD:7350/71B8 and 3B1A:5BC8, where the
+// 5BC8(a,b) helper is (a+b)*100/a (50 when both inputs are 0).  The 7350
+// route-cost and 71B8 castle-value models are not reimplemented here; the
+// caller supplies the ratio so this function stays auditable.
+// ---------------------------------------------------------------------------
+
+int ai_choose_adjacent_target_22856(const Scenario *sc, int castle_id,
+                                    int own_faction, int ref_castle_a,
+                                    int ref_castle_b, int route_source,
+                                    int current_ratio,
+                                    AiTargetScoreFn score_fn, void *user,
+                                    AiAdjacentTarget *out) {
+    if (out) {
+        memset(out, 0, sizeof(*out));
+        out->castle = -1;
+    }
+    if (!sc) return -1;
+    const int n = sc->num_castles;
+    if (n <= 0 || n > MAX_CASTLES) return -1;
+    if (castle_id < 0 || castle_id >= n) return -1;
+
+    const int actor_officers =
+        officer_count_at_castle_5e1a(sc, castle_id);
+    if (actor_officers == 0) return -1;
+    if (ref_castle_a == -1) return -1;
+    if (ref_castle_b == -1) return -1;
+    if (own_faction == -1) return -1;
+    if (castle_id == ref_castle_a) return -1;
+    if (route_source == -1) return -1;
+    // C-side safety: 30FE has no bounds check, but an out-of-range reference
+    // would index outside the local 39x39 matrix.
+    if (ref_castle_a < 0 || ref_castle_a >= n) return -1;
+    if (ref_castle_b < 0 || ref_castle_b >= n) return -1;
+    if (route_source < 0 || route_source >= n) return -1;
+
+    uint8_t matrix[MAX_CASTLES * MAX_CASTLES];
+    if (!scenario_castle_distance_matrix(sc, matrix, MAX_CASTLES,
+                                         MAX_CASTLES)) {
+        return -1;
+    }
+
+    const int d_a = matrix[castle_id * MAX_CASTLES + ref_castle_a];
+    const int d_b = matrix[castle_id * MAX_CASTLES + ref_castle_b];
+
+    // The original compares d1 (refA) with d2 (refB) and uses `jbe`, so a tie
+    // keeps refB.
+    int best_ref;
+    int best_dist;
+    if (d_b > d_a) {
+        best_ref = ref_castle_a;
+        best_dist = d_a;
+    } else {
+        best_ref = ref_castle_b;
+        best_dist = d_b;
+    }
+
+    int best_castle = -1;
+    int best_officers = actor_officers;
+    int best_ratio = current_ratio;
+
+    const ScenarioCastle *actor = &sc->castles[castle_id];
+    for (int i = 0; i < actor->num_conns; i++) {
+        const int cand = actor->conns[i];
+        if (cand < 0 || cand >= n) continue;
+
+        // 43B3:21A8 returns the +0x28 faction field.  43B3:221E is the
+        // "unowned" test: it returns true when that field is 0xFFFF.
+        const int owner = sc->castles[cand].faction_id;
+        if (owner != own_faction && owner != -1) continue;
+
+        const int officers = officer_count_at_castle_5e1a(sc, cand);
+        // 0x2295C: `cmp di, 0xf; jae skip`.
+        if (officers >= 15) continue;
+
+        // 0x22926: 30FE(cand, best_ref) -> matrix[cand][best_ref].
+        const int dist = matrix[cand * MAX_CASTLES + best_ref];
+
+        // 0x2294F calls 5BC8 and then masks the result with `sub ah, ah`.
+        // With no score callback the candidate keeps the actor's ratio, so
+        // the comparison only exercises distance and officer count.
+        int ratio = best_ratio;
+        if (score_fn) ratio = score_fn(sc, cand, user) & 0xFF;
+
+        bool accept = false;
+        if (best_dist > dist) {
+            accept = true;
+        } else if (best_dist == dist) {
+            if (best_officers != officers) {
+                accept = (best_officers > officers);
+            } else {
+                accept = (best_ratio > ratio);
+            }
+        }
+        if (!accept) continue;
+
+        best_castle = cand;
+        best_officers = officers;
+        best_dist = dist;
+        best_ratio = ratio;
+    }
+
+    if (out) {
+        out->castle = best_castle;
+        out->reference = best_ref;
+        out->distance = best_dist;
+        out->officers = best_officers;
+        out->ratio = best_ratio;
+    }
+    return best_castle;
+}

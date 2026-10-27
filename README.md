@@ -190,6 +190,7 @@ cmake --build build -j
 | `--dump-chikei` | — | — | 子任务 13：导出 `Hchikei.gp` 的 100×100 地形 id 网格、id 计数与 60 B 布阵表 |
 | `--raw-width <px>` | — | — | 子任务 13：`--preview-raw` 按指定宽度重解裸 4 位平面图（步长 = 4×⌈w/8⌉），用于侦察 `Maincmd` / `Montage` / `Kisetsu` |
 | `--raw-height <px>` | — | — | 子任务 13：配合 `--raw-width` 把裸图当作固定尺寸 tile 阵列，`tile` 号选择第 n 个 tile |
+| `--v10-selftest` | — | — | V10：合成 39 城距离矩阵/最近城/`0x22856` 邻接目标选择器自测，并抽查真实 `Sndata.gp` |
 | `--frames <n>` | — | `0` | 运行 n 帧后自动退出（`0` = 无限，用于回归/无头测试） |
 | `--screenshot <path>` | — | — | 第 2 帧导出 640x400 BMP 并退出（隐含 `--frames 10`） |
 
@@ -342,7 +343,7 @@ SDL_VIDEODRIVER=dummy ./bin/yphz_engine --testbench --map -c 30 --frames 2 \
 ./bin/yphz_engine --movie end  --frames 20    # 结局 84 块
 ./bin/yphz_engine --unified --frames 2        # 天下統一：Enddat 动画 → 结局 CG
 
-# 一键无头回归（80 项）
+# 一键无头回归（104 项）
 tools/run_regression.sh
 ```
 
@@ -792,12 +793,13 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
 - `message_get_text()`：按 Python 参考把 `0x05` → `" [WAIT] "`、`0x0A` → `'\n'`，
   并裁剪首尾 NUL/空白，输出可直接交给 SJIS 渲染器的显示串。
 
-**`src/scenario.c`（193 行）— 剧本数据**
+**`src/scenario.c`（541 行）— 剧本数据**
 - 静态历史表：39 城地图坐标、15 势力（名称/旗号/旗色，SJIS）、8 道/地方名、
   4 剧本标题。
 - `scenario_load()`：从 `Sndata.gp` 读取剧本（每剧本 41266 字节），解析年代/月份、
   **401 名武将**（71 字节/条，基址 `0x24`）、**39 城**（76 字节/条，基址 `0x7056`）、
-  城池连接关系（`conns[]`）、势力/居城归属。
+  城池连接关系（`conns[]`）、势力/居城归属；V10 增加 BFS 距离、39×39
+  字节矩阵与最近友城/敌城 API。
 
 **`include/`**：`scenario.h`（`FactionDef`/`ScenarioOfficer`/`ScenarioCastle`/
 `Scenario`）、`decompress.h`（`ImageDecoded` + `ls11_decompress_stream`）、
@@ -1342,3 +1344,23 @@ PC-98 16 色图像为 4 位平面（2 像素/字节），行按 8 像素（4 字
   零警告；新增 `--v9-selftest`，回归从 80 增至 **93 项全 PASS**。
   详见 [`report_summary_v9.md`](report_summary_v9.md) 与
   [`docs/MAIN_EXE_ARCHITECTURE.md`](docs/MAIN_EXE_ARCHITECTURE.md) 第 10 节。
+
+**子任务 19 — V10 战略距离矩阵与邻接目标选择 — ✅ 已完成**
+- **底层 API**：`scenario_castle_distance()`（BFS，深度 ≤200）、
+  `scenario_castle_distance_matrix()`（39×39 字节，`[from*39+to]`）、
+  `scenario_nearest_friendly_castle()` / `scenario_nearest_enemy_castle()`
+  按原版 `43B3:301C/30C2/3114/3158`（静态 `4000:5F60/6006/6058/609C`）
+  的参数顺序 `(faction, source)` 移植。
+- **独立选择器**：新增 `ai_choose_adjacent_target_22856()`，完整保留
+  `0x22856` 的守卫、`best_ref` 平局规则、15 武将门与
+  `(距离, 武将数, 比率)` 字典序；`7350/71B8` 评分隔离为回调，未冒充原版。
+- **邻接修正**：确认 `+0x10` 是保留槽、`+0x12..+0x1e` 才是 7 个邻城；
+  现有解析器跳过 `+0x10` 正确，39 城 72 条边。
+- **不改变现有 AI**：选择器**未**接入 `ai_run_turn()`；`--ai-step` 结果
+  `domestic=62 attacks=5 captures=4 pending=1` 与基线逐字节一致，存档仍为
+  63655 字节 / `hash=0x1a8de859`。
+- **工具/验收**：`tools/trace_v10_strategic.py` 生成 `re_out/v10/trace.*`；
+  新增 `--v10-selftest`，回归从 93 增至 **104 项全 PASS**。无 DOSBox-X，
+  所有结论均为静态/自测，未做原版动态验证。详见
+  [`report_summary_v10.md`](report_summary_v10.md) 与
+  [`docs/MAIN_EXE_ARCHITECTURE.md`](docs/MAIN_EXE_ARCHITECTURE.md) 第 11 节。

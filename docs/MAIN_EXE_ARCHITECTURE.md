@@ -666,7 +666,8 @@ call`。目标函数的直接调用计数（同一调用点只按目标线性地
 |---:|---:|---|---|
 | `+0x00` | 10B | 城名 SJIS | 存档/`scenario.c` |
 | `+0x0a` | 10B | 城名假名 | 存档/`scenario.c` |
-| `+0x12..+0x1f` | 7×16 | 邻接/连接字段 | `4000:500a`；见下方异常 |
+| `+0x10` | 16 | 保留/旗标槽（不是邻接） | 存档实测 38 条为 0，castle 19 为 179 |
+| `+0x12..+0x1e` | 7×16 | 邻接/连接字段 | `4000:500a` 的 `+0x12 + i*2 (i=0..6)`；见下方说明 |
 | `+0x20` | 16 | 城主/武将链头 | `4000:517c`、`5e1a`；存档 `lord_officer_id` |
 | `+0x22` | 16 | 未命名值 | `4000:52ce/52e4` |
 | `+0x24` | 16 | 未命名值 | `4000:5310` |
@@ -727,9 +728,9 @@ morale = clamp(value, 0, 999);
 战斗 clamp 均保留该上限；`55b4` 的城防 cap 属于另一条更严格的路径，
 在没有确认所有调用者前不替换现有通用上限。
 
-#### 邻接字段 `+0x12` 的异常
+#### 邻接字段：`+0x10` 是保留槽，`+0x12` 才是第一邻城
 
-`FUN_4000_500a`：
+V10 复核推翻了旧版“`+0x12` 第一槽异常”的说法。`FUN_4000_500a`：
 
 ```c
 if (index < 7) {
@@ -739,18 +740,19 @@ if (index < 7) {
 return 0xffff;
 ```
 
-但存档里 39 条城记录的 **第一项** `+0x12`：
+它读的是 `+0x12 + i*2, i=0..6`，即 `+0x12..+0x1e`。存档里异常的值在
+**`+0x10`**，不是 `+0x12`：
 
-- 38 条为 `0x0000`；
-- castle 19（熊野新宮）为 `0x00b3`（179）。
+- `+0x10`：38 条为 `0x0000`，castle 19（熊野新宮）为 `0x00b3`（179）；
+- `+0x12..+0x1e`：7 个真实邻城槽，`0xffff` 终止。
 
-`src/scenario.c` 从 `k=1` 开始读邻接，跳过第一项。若 `500a` 的 7 个索引
-都真的是邻接，BFS 会把 castle 0 当成所有城的邻居，结果不合理。因此：
+`src/scenario.c` 从存档 `c[16 + k*2] (k=1..7)` 读取，正好对应
+`+0x12..+0x1e`，跳过 `+0x10` 是正确的。39 城共 72 条无向边、图连通，
+也由回归测试固定下来。因此：
 
-- `500a` 是“按索引读 `+0x12` 起的 16 位字段”这一点已确认；
-- 把 7 个槽全部解释为邻接城 ID **不可靠**；
-- 第一槽可能是保留/地形/海路标志，或原程序存在边界处理；
-- 需要 UI 地图或行军代码才能最终判定。
+- `500a` 的 7 个索引就是 7 个邻城；
+- `+0x10` 是保留/旗标字段，不参与 BFS、边境判定或距离矩阵；
+- 旧版“第一槽异常会影响 BFS/边境”的保留意见可以撤销。
 
 ### 3.3 16 条势力表（段 `4c09`）
 
@@ -903,8 +905,8 @@ return 0;
 ```
 
 确认点：最多检查 7 个邻接槽；遇到 `0xffff` 立即返回 0；只把“非无主且
-不同势力”的邻居算作边境。由于 3.2 的第一槽异常，这个函数的结果可能
-受 `+0x12` 第一项影响。
+不同势力”的邻居算作边境。V10 已确认 7 个槽都来自 `+0x12..+0x1e`，
+`+0x10` 不参与，因此旧版的“第一槽异常”保留意见不再适用。
 
 ### 4.4 城将链计数：`4000:5e1a`
 
@@ -960,7 +962,8 @@ return 0xff;
 ```
 
 确认点：广度优先、最多 200 层、不可达返回 `0xff`、起点=终点返回 0。
-这也是 `+0x12` 第一槽异常会影响的地方。
+V10 已确认 BFS 的 7 个邻接槽就是 `+0x12..+0x1e`；`src/scenario.c` 的
+`scenario_castle_distance` 是这条函数的精确移植。
 
 ### 4.7 39×39 距离矩阵：`4000:6006`
 
@@ -976,18 +979,22 @@ for (i = 0; i < 39; i++)
 ### 4.8 最近城搜索：`4000:6058` / `4000:609c`
 
 ```c
-// 6058：本势力最近城
+// 6058：本势力最近城。栈参数 [bp+6]=faction, [bp+8]=source
 best = -1; bestd = 0xff;
 for (c = 0; c < 39; c++) {
     if (FUN_4000_50ec(c) != faction) continue;
-    d = FUN_4000_6042(source, c);       // 读 39×39 矩阵
+    d = FUN_4000_6042(c, source);       // matrix[c*39 + source]
     if (d < bestd) { best = c; bestd = d; }
 }
 return best;
 ```
 
-`609c` 相同，但排除 `param_2` 势力，返回“最近的敌城”。`6042` 的索引是
-`param_2 * 0x27 + param_3`，即 39 列矩阵。
+`609c` 相同，但先对 `faction == 0xffff` 返回 -1，并跳过 `owner == 0xffff`
+和 `owner == faction` 的城，返回“最近的敌城”。`6042` 的索引是
+`param_2 * 0x27 + param_3`，即 39 列矩阵。两者都用严格 `<` 更新，平局
+保留 castle id 最小者；`6058` 会把 source 城自己算进结果（距离 0）。
+V10 的 `scenario_nearest_friendly_castle` / `scenario_nearest_enemy_castle`
+按原始栈参数顺序 `(faction, source)` 移植。
 
 ### 4.9 模板城生成/刷新：`4000:704e`
 
@@ -1403,7 +1410,7 @@ ndisasm -b16 -o0x15fb /tmp/15fb.bin
 1. 400 条运行时表与 401 条存档武将记录的转换代码；
 2. `+0x1a/+0x1c` 两个 16 位字段的真实语义；
 3. 城 `+0x36/+0x38/+0x3a/+0x3c` 的业务名；
-4. `+0x12` 第一槽是邻接还是保留字段；
+4. ~~`+0x12` 第一槽是邻接还是保留字段~~（V10 已确认：`+0x10` 是保留槽，`+0x12` 起 7 个邻城）；
 5. 战略回主循环与内政命令分派；
 6. 月/季收入、征兵、开发、征税的原始公式；
 7. `Mainevt` 触发条件与播放调用；
@@ -1556,3 +1563,178 @@ bash tools/run_regression.sh
 
 V9 验收：`make clean && make -j$(nproc)` 与 `cmake --build build -j`
 均 0 warnings / 0 errors；回归 93 passed / 0 failed；存档仍为 63655 字节。
+
+## 11. V10：战略回合距离矩阵与邻接目标选择
+
+V10 只做**底层能力与独立选择器**，不改 `ai_run_turn()` 的现有进攻启发式。
+因此现有 `--ai-step` 的月度结果与存档字节保持不变。
+
+### 11.1 地址与置信度
+
+| 名称 | 运行时 | 静态等价 | 置信度 |
+|---|---|---|---|
+| 距离 BFS | `43B3:301C` | `4000:5F60` | B |
+| 距离矩阵 | `43B3:30C2` | `4000:6006` | B |
+| 最近友城 | `43B3:3114` | `4000:6058` | B |
+| 最近敌城 | `43B3:3158` | `4000:609C` | B |
+| 邻接槽读取 | `43B3:20C6` | `4000:500A` | B |
+| 城势力 | `43B3:21A8` | `4000:50EC` | B |
+| 武将计数 | `43B3:2ED6` | `4000:5E1A` | B |
+| 矩阵读取 | `43B3:30FE` | `4000:6042` | B |
+| 目标选择 | 线性 `0x22856` | 覆盖层 | B（控制流）/ C（评分） |
+| 决策上下文 | 线性 `0x226E0` | 覆盖层 | B |
+| 执行门 | 线性 `0x22F60` | 覆盖层 | B |
+| 六路分派 | 线性 `0x2303C` | 覆盖层 | B |
+
+映射仍按 `43B3 IP = 静态 IP - 0x2F44`；`0x226xx` 页面在转储中没有记录真实
+CS，`2285:0006` 只是 `linear/16` 的标签，不是已确认的 CS:IP。
+
+置信度定义：**A** = 原版动态验证；**B** = 静态反汇编确认；**C** = C 侧近似
+或未确认边界。本工作区没有 DOSBox-X，故 V10 没有任何 A 级结论。
+
+### 11.2 战略链（B 级控制流）
+
+```text
+0x226E0(castle, value_array)
+  0x920A = castle
+  0x9210 = 21A8(castle)                     // +0x28 势力
+  0x920C = 28FD:752C(castle, value_array)   // 两步内最佳目标
+  0x920E = 43B3:3158(owner, castle)         // 最近敌城，参数 (faction, source)
+  0x9214 = 28FD:71B8(castle)                // 城价值
+  0x9216 = 3B1A:5BC8(value, cost)           // cost = 7350(owner, 0x9212, castle)
+  0x9218..0x9220 = 18A6:3D86 / 43B3:1C18/1CA2 等
+
+0x22F60(castle, ctx)
+  if 0x9220 条件 / 武将数 / 5C02 概率 / 目标资源门槛 29F2 / 26D4>>3 / 2774>>3
+  0x22D82(...) 执行
+  否则 0x2303C(castle, ctx, action 0..5)
+     -> 31CA:044A / 0458 / 0474 / 0FFC / 100A / 145A
+```
+
+`0x9212` 只被读、且为 `-1` 时 `0x22856` 直接放弃；它还是
+`7350(owner, 0x9212, castle)` 的路径起点。它“很可能是某个城 ID”，但写入者
+与业务含义未确认，V10 不命名它，只在 API 中暴露为 `route_source`。
+
+`0x2303C` 六个动作的效果（内政/征兵/训练等）尚未逐一解码；包装门
+`0x23196/0x231EA/0x23250/0x23304/0x2337E/0x2348E` 只确认了分派形状，不能
+据此声称六路内政已复现。
+
+### 11.3 距离与最近城（精确移植）
+
+`43B3:301C`：
+
+- 起点=终点返回 0；
+- 7 个邻接槽来自 `+0x12..+0x1e`（`20C6`），`0xffff`/越界槽不参与；
+- 广度优先，按层推进，`depth` 从 1 开始；
+- 找到目标立即返回当前层号；
+- 深度上限 200，超限或图耗尽返回 `0xFF`。
+
+`43B3:30C2` 生成 39×39 字节矩阵，索引 `matrix[from*39 + to]`。
+`43B3:3114/3158` 的参数顺序都是 **`(faction, source)`**：
+
+- 6058 扫描 `owner == faction`，用 `matrix[castle*39 + source]`；
+- 609C 先对 `faction == 0xFFFF` 返回 -1，再跳过 `owner == 0xFFFF` 与
+  `owner == faction`；
+- 两者 `bestd` 初值 `0xFF`，严格 `<` 才更新，因此平局保留 castle id 最小者；
+- 6058 会把 source 城自己算进去（距离 0），这是原版行为，不是 bug。
+
+C 移植：
+
+```c
+int scenario_castle_distance(const Scenario *sc, int from, int to);
+bool scenario_castle_distance_matrix(const Scenario *sc, uint8_t *out,
+                                     int out_rows, int out_cols);
+int scenario_nearest_friendly_castle(const Scenario *sc, int faction, int source);
+int scenario_nearest_enemy_castle(const Scenario *sc, int faction, int source);
+```
+
+边界差异：原版各访问器没有统一的越界检查（`30FE` 直接读
+`matrix[row*39+col]`）；C 侧对非法 id 统一返回 `0xFF` / `-1`。正常 39 城
+数据上二者一致。
+
+### 11.4 `0x22856` 邻接目标选择（B 级）
+
+```text
+if 5E1A(actor) == 0 or 0x920C == -1 or 0x920E == -1 or 0x9210 == -1
+   or actor == 0x920C or 0x9212 == -1: return -1
+
+d1 = matrix[actor][0x920C]
+d2 = matrix[actor][0x920E]
+best_ref = (d2 <= d1) ? 0x920E : 0x920C     // 平局取 B
+best_dist = min(d1, d2)
+best = (officers=5E1A(actor), dist=best_dist, ratio=0x9216)
+
+for slot 0..6:
+    cand = 20C6(actor, slot)
+    if cand == -1: break
+    owner = 21A8(cand)
+    if owner != 0x9210 and owner != -1: continue
+    officers = 5E1A(cand)
+    if officers >= 15: continue
+    dist = matrix[cand][best_ref]
+    ratio = 5BC8(71B8(cand), 7350(owner, 0x9212, cand)) & 0xFF
+    if (dist, officers, ratio) < (best_dist, best_officers, best_ratio):
+        best = cand
+return best or -1
+```
+
+`5BC8(a,b) = (a+b)*100/a`（`a=b=0` 时为 50）。`0x226E0` 的初值以
+`5BC8(value, cost)` 调用，候选处先压成本、再压价值，因此 `5BC8` 的
+`a` 仍是 value；结果越小表示“每单位价值所需成本越低”。选择器取字典序最小，
+平局不替换。
+
+C 接口：
+
+```c
+int ai_choose_adjacent_target_22856(const Scenario *sc, int castle_id,
+                                    int own_faction, int ref_castle_a,
+                                    int ref_castle_b, int route_source,
+                                    int current_ratio,
+                                    AiTargetScoreFn score_fn, void *user,
+                                    AiAdjacentTarget *out);
+```
+
+- `score_fn == NULL` 时候选沿用当前 ratio，评分不参与平局；
+- `7350` 路径成本与 `71B8` 城价值**没有**在 C 侧重写，避免把未确认模型
+  冒充原版；
+- 该函数**未**接入 `ai_run_turn()`；现有进攻逻辑仍是 C 级启发式。
+
+### 11.5 邻接槽结论修正
+
+旧版文档把 `+0x10` 的异常值误写成 `+0x12` 第一槽。V10 复核：
+
+- `20C6` 读 `castle + 0x12 + 2*slot, slot<7`，即 `+0x12..+0x1e`；
+- `Sndata.gp` 的 `+0x10` 38 条为 0，castle 19 为 179，原版从不读取；
+- `src/scenario.c` 从 `c[16 + k*2], k=1..7` 解析，跳过 `+0x10` 正确；
+- 39 城共 72 条无向边，图连通。
+
+因此 `+0x10` 是保留/旗标字段，不是“第一邻城”；`+0x12` 就是第一邻城。
+
+### 11.6 工具与验收
+
+```bash
+python3 tools/trace_v10_strategic.py     # -> re_out/v10/trace.json / trace.md
+./bin/yphz_engine --v10-selftest         # 合成 39 城 + 真实剧本抽查
+bash tools/run_regression.sh             # 104 项
+```
+
+自测覆盖：
+
+- 距离 0/1/链长/不可达/反向对称；
+- 矩阵字节、对称性、对角线、最大距离、不可达对数；
+- 最近友城平局、最近敌城、无主城、非法参数；
+- 选择器接受本势力/无主城、15 武将门、评分平局、原地不动、0 武将、
+  非法 route_source/faction/refA/refB 及越界 ref/route 守卫；
+- 真实 `Sndata.gp`：`d(30,29)=1`、`d(30,0)=13`、最近友城 30、最近敌城 27。
+
+真实数据值另由独立 Python BFS 复核，结果一致。
+
+### 11.7 未决问题
+
+1. `0x9212` 的写入者与语义；
+2. `31CA:xxxx` 六种行动的具体效果；
+3. `22D82` 的状态变化；
+4. `18A6:3D86/3D54/2DBA/3856`、`43B3:1C18/1CA2` 的返回语义；
+5. 月度 AI 顶层调用者（可能位于未驻留的覆盖层）；
+6. `30280` 的 from/to/owner 命名仍需更多调用者证据；
+7. 无 DOSBox-X，全部结论仅为静态/自测，不是原版动态验证。

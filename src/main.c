@@ -1872,6 +1872,216 @@ static void v9_selftest_run(void) {
            kassen_original_target_choice(&actor, &target, 1, power, &rng) ? 1 : 0);
 }
 
+// ---------------------------------------------------------------------------
+// V10 self-test: distance / nearest-castle ports and the 0x22856 selector.
+// Uses a synthetic 39-castle graph so the expected byte distances are fixed;
+// an optional real-Sndata block prints values for the shipped scenario.
+// ---------------------------------------------------------------------------
+
+static void v10_link(Scenario *sc, int a, int b) {
+    if (a < 0 || a >= MAX_CASTLES || b < 0 || b >= MAX_CASTLES) return;
+    ScenarioCastle *ca = &sc->castles[a];
+    ScenarioCastle *cb = &sc->castles[b];
+    if (ca->num_conns < 8 && cb->num_conns < 8) {
+        ca->conns[ca->num_conns++] = b;
+        cb->conns[cb->num_conns++] = a;
+    }
+}
+
+static void v10_castle(Scenario *sc, int id, int faction, int officers) {
+    sc->castles[id].faction_id = faction;
+    for (int i = 0; i < officers; i++) {
+        if (sc->num_officers >= MAX_OFFICERS) return;
+        ScenarioOfficer *o = &sc->officers[sc->num_officers];
+        memset(o, 0, sizeof(*o));
+        o->id = sc->num_officers;
+        o->castle_id = id;
+        o->faction_id = faction;
+        o->is_active = true;
+        sc->num_officers++;
+    }
+}
+
+static int v10_score_stub(const Scenario *sc, int castle_id, void *user) {
+    (void)sc;
+    const int *ids = (const int *)user;
+    if (castle_id == ids[0]) return 10;
+    if (castle_id == ids[1]) return 5;
+    return 0;
+}
+
+static void v10_selftest_run(void) {
+    static Scenario sc;
+    memset(&sc, 0, sizeof(sc));
+    sc.num_castles = MAX_CASTLES;
+    for (int i = 0; i < MAX_CASTLES; i++) {
+        sc.castles[i].id = i;
+        sc.castles[i].faction_id = -1;
+        sc.castles[i].num_conns = 0;
+    }
+
+    // Base chain 0-1-2-3-4, isolated 5, pair 6-7, and 6-8.
+    v10_link(&sc, 0, 1);
+    v10_link(&sc, 1, 2);
+    v10_link(&sc, 2, 3);
+    v10_link(&sc, 3, 4);
+    v10_link(&sc, 6, 7);
+    v10_link(&sc, 6, 8);
+    v10_castle(&sc, 0, 0, 1);
+    v10_castle(&sc, 1, 1, 1);
+    v10_castle(&sc, 2, 0, 1);
+    v10_castle(&sc, 3, 1, 1);
+    v10_castle(&sc, 4, 0, 1);
+    v10_castle(&sc, 6, 2, 1);
+    v10_castle(&sc, 7, -1, 1);
+    v10_castle(&sc, 8, 0, 1);
+
+    // Selector A: 10 (actor) - 11/12/13/14, 11 - 20.
+    v10_link(&sc, 10, 11);
+    v10_link(&sc, 10, 12);
+    v10_link(&sc, 10, 13);
+    v10_link(&sc, 10, 14);
+    v10_link(&sc, 11, 20);
+    v10_castle(&sc, 10, 0, 1);
+    v10_castle(&sc, 11, 0, 2);
+    v10_castle(&sc, 12, 1, 1);
+    v10_castle(&sc, 13, -1, 1);
+    v10_castle(&sc, 14, 0, 15);
+    v10_castle(&sc, 20, 0, 1);
+
+    // Score tie-break: 15 - 16/17 - 18.
+    v10_link(&sc, 15, 16);
+    v10_link(&sc, 15, 17);
+    v10_link(&sc, 16, 18);
+    v10_link(&sc, 17, 18);
+    v10_castle(&sc, 15, 0, 1);
+    v10_castle(&sc, 16, 0, 2);
+    v10_castle(&sc, 17, 0, 2);
+    v10_castle(&sc, 18, 0, 1);
+
+    // Unowned/enemy/15-officer gate around actor 20.
+    v10_link(&sc, 20, 21);
+    v10_link(&sc, 20, 22);
+    v10_link(&sc, 20, 23);
+    v10_link(&sc, 20, 26);
+    v10_link(&sc, 26, 24);
+    v10_link(&sc, 22, 25);
+    v10_castle(&sc, 21, 1, 1);
+    v10_castle(&sc, 22, -1, 1);
+    v10_castle(&sc, 23, 0, 15);
+    v10_castle(&sc, 24, 0, 1);
+    v10_castle(&sc, 25, 1, 1);
+    v10_castle(&sc, 26, 0, 1);
+
+    // Stay-put case: refs at distance 2, both neighbours at distance 3.
+    v10_link(&sc, 27, 28);
+    v10_link(&sc, 27, 29);
+    v10_link(&sc, 27, 34);
+    v10_link(&sc, 34, 32);
+    v10_link(&sc, 34, 33);
+    v10_castle(&sc, 27, 1, 1);
+    v10_castle(&sc, 28, 1, 1);
+    v10_castle(&sc, 29, 1, 1);
+    v10_castle(&sc, 32, 0, 1);
+    v10_castle(&sc, 33, 0, 1);
+    v10_castle(&sc, 34, 0, 1);
+
+    printf("[V10] dist same=%d adj=%d chain=%d unreachable=%d rev=%d\n",
+           scenario_castle_distance(&sc, 0, 0),
+           scenario_castle_distance(&sc, 0, 1),
+           scenario_castle_distance(&sc, 0, 4),
+           scenario_castle_distance(&sc, 0, 5),
+           scenario_castle_distance(&sc, 4, 0));
+
+    static uint8_t matrix[MAX_CASTLES * MAX_CASTLES];
+    bool matrix_ok = scenario_castle_distance_matrix(&sc, matrix,
+                                                    MAX_CASTLES, MAX_CASTLES);
+    printf("[V10] matrix ok=%d 0_2=%d 5_0=%d 4_3=%d\n",
+           matrix_ok ? 1 : 0, matrix[0 * MAX_CASTLES + 2],
+           matrix[5 * MAX_CASTLES + 0], matrix[4 * MAX_CASTLES + 3]);
+
+    int matrix_sym = 1, matrix_diag = 1, max_dist = 0, unreachable = 0;
+    for (int a = 0; a < MAX_CASTLES; a++) {
+        for (int b = 0; b < MAX_CASTLES; b++) {
+            uint8_t d = matrix[a * MAX_CASTLES + b];
+            if (d != matrix[b * MAX_CASTLES + a]) matrix_sym = 0;
+            if (a == b && d != 0) matrix_diag = 0;
+            if (d == CASTLE_DIST_UNREACHABLE) unreachable++;
+            else if (d > max_dist) max_dist = d;
+        }
+    }
+    printf("[V10] matrix sym=%d diag=%d max=%d unreachable_pairs=%d\n",
+           matrix_sym, matrix_diag, max_dist, unreachable);
+
+    printf("[V10] friend tie=%d f1=%d unreachable=%d badsrc=%d\n",
+           scenario_nearest_friendly_castle(&sc, 0, 1),
+           scenario_nearest_friendly_castle(&sc, 1, 0),
+           scenario_nearest_friendly_castle(&sc, 2, 0),
+           scenario_nearest_friendly_castle(&sc, 0, -1));
+
+    printf("[V10] enemy from0=%d from6=%d unowned_src=%d badfac=%d\n",
+           scenario_nearest_enemy_castle(&sc, 0, 0),
+           scenario_nearest_enemy_castle(&sc, 2, 6),
+           scenario_nearest_enemy_castle(&sc, 2, 7),
+           scenario_nearest_enemy_castle(&sc, -1, 0));
+
+    AiAdjacentTarget sel;
+    int chosen = ai_choose_adjacent_target_22856(
+        &sc, 10, 0, 11, 20, 30, 20, NULL, NULL, &sel);
+    printf("[V10] select basic=%d ref=%d dist=%d officers=%d\n",
+           chosen, sel.reference, sel.distance, sel.officers);
+
+    int score_ids[2] = {16, 17};
+    chosen = ai_choose_adjacent_target_22856(
+        &sc, 15, 0, 18, 19, 30, 20, v10_score_stub, score_ids, &sel);
+    printf("[V10] select score_tie=%d ratio=%d\n", chosen, sel.ratio);
+
+    chosen = ai_choose_adjacent_target_22856(
+        &sc, 20, 0, 24, 25, 30, 20, NULL, NULL, &sel);
+    printf("[V10] select unowned=%d ref=%d dist=%d\n",
+           chosen, sel.reference, sel.distance);
+
+    chosen = ai_choose_adjacent_target_22856(
+        &sc, 27, 1, 32, 33, 30, 20, NULL, NULL, &sel);
+    printf("[V10] select stay=%d\n", chosen);
+
+    chosen = ai_choose_adjacent_target_22856(
+        &sc, 5, 0, 0, 1, 30, 20, NULL, NULL, &sel);
+    int g1 = ai_choose_adjacent_target_22856(
+        &sc, 10, 0, 11, 20, -1, 20, NULL, NULL, &sel);
+    int g2 = ai_choose_adjacent_target_22856(
+        &sc, 10, -1, 11, 20, 30, 20, NULL, NULL, &sel);
+    int g3 = ai_choose_adjacent_target_22856(
+        &sc, 10, 0, 10, 20, 30, 20, NULL, NULL, &sel);
+    int g4 = ai_choose_adjacent_target_22856(
+        &sc, 10, 0, 11, -1, 30, 20, NULL, NULL, &sel);
+    int g5 = ai_choose_adjacent_target_22856(
+        &sc, 10, 0, MAX_CASTLES, 20, 30, 20, NULL, NULL, &sel);
+    int g6 = ai_choose_adjacent_target_22856(
+        &sc, 10, 0, 11, MAX_CASTLES, 30, 20, NULL, NULL, &sel);
+    int g7 = ai_choose_adjacent_target_22856(
+        &sc, 10, 0, 11, 20, MAX_CASTLES, 20, NULL, NULL, &sel);
+    printf("[V10] select no_officers=%d guards=%d,%d,%d,%d,%d,%d,%d\n",
+           chosen, g1, g2, g3, g4, g5, g6, g7);
+
+    // Optional real-scenario probe: uses the shipped Sndata.gp when present.
+    Scenario *real = (Scenario *)malloc(sizeof(Scenario));
+    if (real && file_exists("games/yphz/Sndata.gp") &&
+        scenario_load("games/yphz/Sndata.gp", 0, real)) {
+        printf("[V10] real d30_29=%d d30_0=%d friend30=%d enemy30=%d\n",
+               scenario_castle_distance(real, 30, 29),
+               scenario_castle_distance(real, 30, 0),
+               scenario_nearest_friendly_castle(
+                   real, real->castles[30].faction_id, 30),
+               scenario_nearest_enemy_castle(
+                   real, real->castles[30].faction_id, 30));
+    } else {
+        printf("[V10] real skipped\n");
+    }
+    free(real);
+}
+
+
 int main(int argc, char *argv[]) {
     const char *screenshot_path = NULL;
     int max_frames = 0;
@@ -2008,6 +2218,7 @@ int main(int argc, char *argv[]) {
 
     // 子任务 12: encoding / localization CLI.
     bool        v9_selftest = false;           // --v9-selftest
+    bool        v10_selftest = false;          // --v10-selftest
     bool        dump_officers = false;         // --dump-officers
     bool        dump_messages = false;         // --dump-messages
     const char *dump_table = NULL;             // --dump-code-table <koei|gbk|big5|all>
@@ -2271,6 +2482,8 @@ int main(int argc, char *argv[]) {
             }
         } else if (strcmp(argv[i], "--v9-selftest") == 0) {
             v9_selftest = true;
+        } else if (strcmp(argv[i], "--v10-selftest") == 0) {
+            v10_selftest = true;
         } else if (strcmp(argv[i], "--dump-officers") == 0) {
             dump_officers = true;
             if (max_frames == 0) max_frames = 1;
@@ -2287,6 +2500,10 @@ int main(int argc, char *argv[]) {
 
     if (v9_selftest) {
         v9_selftest_run();
+        return 0;
+    }
+    if (v10_selftest) {
+        v10_selftest_run();
         return 0;
     }
 
