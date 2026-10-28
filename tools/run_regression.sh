@@ -255,6 +255,7 @@ check "V10 nearest enemy"       "\[V10\] enemy from0=1 from6=8 unowned_src=8 bad
 check "V10 selector accepts own" "\[V10\] select basic=11 ref=11 dist=0 officers=2" --v10-selftest
 check "V10 selector score tie"  "\[V10\] select score_tie=17 ratio=5" --v10-selftest
 check "V10 selector unowned"    "\[V10\] select unowned=22 ref=25 dist=1" --v10-selftest
+check "V10 selector accepts negative own faction" "\\[V10\\] select ownneg=22" --v10-selftest
 check "V10 selector stays put"  "\[V10\] select stay=-1" --v10-selftest
 check "V10 selector guards"  "\[V10\] select no_officers=-1 guards=-1,-1,-1,-1,-1,-1,-1" --v10-selftest
 check "V10 real scenario check" "\[V10\] real d30_29=1 d30_0=13 friend30=30 enemy30=27" --v10-selftest

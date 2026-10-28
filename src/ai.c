@@ -212,7 +212,6 @@ int ai_choose_adjacent_target_22856(const Scenario *sc, int castle_id,
     if (actor_officers == 0) return -1;
     if (ref_castle_a == -1) return -1;
     if (ref_castle_b == -1) return -1;
-    if (own_faction == -1) return -1;
     if (castle_id == ref_castle_a) return -1;
     if (route_source == -1) return -1;
     // C-side safety: 30FE has no bounds check, but an out-of-range reference

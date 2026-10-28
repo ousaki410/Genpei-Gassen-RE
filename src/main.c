@@ -2041,6 +2041,10 @@ static void v10_selftest_run(void) {
     printf("[V10] select unowned=%d ref=%d dist=%d\n",
            chosen, sel.reference, sel.distance);
 
+    int g8 = ai_choose_adjacent_target_22856(
+        &sc, 20, -1, 24, 25, 30, 20, NULL, NULL, &sel);
+    printf("[V10] select ownneg=%d\n", g8);
+
     chosen = ai_choose_adjacent_target_22856(
         &sc, 27, 1, 32, 33, 30, 20, NULL, NULL, &sel);
     printf("[V10] select stay=%d\n", chosen);
