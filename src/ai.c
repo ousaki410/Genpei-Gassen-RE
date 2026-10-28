@@ -178,7 +178,7 @@ void ai_run_turn(TurnState *ts, Scenario *sc, AiReport *report) {
 //
 // The disassembly of 0x22856..0x229A5 establishes the complete control flow:
 //   - 5E1A(actor) == 0, refA == -1, refB == -1, actor faction == -1,
-//     actor == refA, or route source == -1  -> return -1;
+//     actor == refA, or route source == -1 -> return -1;
 //   - best_ref = (matrix[actor][refB] <= matrix[actor][refA]) ? refB : refA;
 //   - initial best = (officers(actor), min distance, 0x9216);
 //   - each of the seven adjacency slots is rejected on -1, on a foreign owner
@@ -212,6 +212,7 @@ int ai_choose_adjacent_target_22856(const Scenario *sc, int castle_id,
     if (actor_officers == 0) return -1;
     if (ref_castle_a == -1) return -1;
     if (ref_castle_b == -1) return -1;
+    if (own_faction == -1) return -1;
     if (castle_id == ref_castle_a) return -1;
     if (route_source == -1) return -1;
     // C-side safety: 30FE has no bounds check, but an out-of-range reference
