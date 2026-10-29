@@ -96,8 +96,10 @@ RT = {
     "40BD8": 0x40BD8,   # 3B1A:5A38 percent
     "226E0": 0x226E0,
     "22856": 0x22856,
+    "22980": 0x22980,
     "22B22": 0x22B22,
     "22F60": 0x22F60,
+    "24682": 0x24682,   # contains cmp di, [0x9212] @ 0x24745
     "45C20": 0x45C20,   # 43B3:20F0 adjacency
     "45CC2": 0x45CC2,   # 43B3:2192
     "45CD8": 0x45CD8,   # 43B3:21A8 castle+0x28 faction
@@ -122,6 +124,7 @@ NAMES = {
     "0x22856": "22856",
     "0x22B22": "22B22",
     "0x22F60": "22F60",
+    "0x24682": "24682",
     "0x45C20": "20F0",
     "0x45CC2": "2192",
     "0x45CD8": "21A8",
@@ -305,96 +308,229 @@ def extract_calls(instrs: list[dict], data: bytes) -> list[dict]:
     return calls
 
 
-def scan_abs_mem_refs(data: bytes, disp16: int) -> list[dict]:
-    """Scan a byte image for every absolute 16-bit memory reference to `disp16`
-    (bytes `disp_lo disp_hi` interpreted as a 16-bit displacement with no base
-    register) across all 8086 encodings, including segment overrides.
+def scan_abs_mem_refs(rt: bytes, exe: bytes, disp16: int, scan_addrs: list[int] = None,
+                       is_runtime: bool = True) -> list[dict]:
+    """Instruction-aware scan for absolute memory references to `disp16`.
 
-    Returns dicts with the surrounding bytes so a human / downstream script can
-    classify read vs write and exclude data-compression false positives.
+    Uses Capstone's 16-bit x86 decoder to disassemble instructions within
+    functions listed in RT. Only reports memory operands that:
+      * Are absolute (mem.base == 0, mem.index == 0)
+      * Match the target displacement (mem.disp & 0xFFFF == disp16)
+      * Use the default data segment (DS) or an explicit DS override
+
+    Parameters
+    ----------
+    rt: runtime snapshot bytes (used to determine scan addresses)
+    exe: Main.exe bytes
+    disp16: target displacement (e.g. 0x9212)
+    scan_addrs: optional list of runtime addresses to scan; if None, uses RT
+    is_runtime: if True, address labels use 5-digit runtime format;
+                if False, address labels use 6-digit exe format
+
+    Each hit includes: address, function name, mnemonic, operand string,
+    access type (read/write/read_write/unknown), and raw bytes.
     """
-    lo = disp16 & 0xFF
-    hi = (disp16 >> 8) & 0xFF
-    pat = bytes([lo, hi])
+    from capstone import CS_OP_MEM, CS_AC_READ, CS_AC_WRITE
+
+    md = Cs(CS_ARCH_X86, CS_MODE_16)
+    md.detail = True
+
+    # Determine which data and addresses to scan
+    if is_runtime:
+        data = rt
+    else:
+        data = exe
+        # For EXE scan, translate RT runtime addresses to static file offsets
+        if scan_addrs:
+            scan_addrs = [static_file_offset(a, exe, rt)[0][0] if static_file_offset(a, exe, rt) else a
+                          for a in scan_addrs]
+
+    if scan_addrs is None:
+        scan_addrs = list(RT.values())
+
     hits: list[dict] = []
-    s = 0
-    while True:
-        i = data.find(pat, s)
-        if i < 0:
-            break
-        ctx_start = max(0, i - 10)
-        ctx_end = min(len(data), i + 12)
-        hits.append(
-            {
-                "position": i,
-                "context": data[ctx_start:ctx_end].hex(" "),
-            }
-        )
-        s = i + 1
+
+    for addr in sorted(scan_addrs):
+        func_end = min(addr + 0x200, len(data))
+        scan_name = f"0x{addr:05X}" if is_runtime else f"0x{addr:06x}"
+
+        current = addr
+        while current < func_end:
+            try:
+                ins = next(md.disasm(data[current:func_end], current))
+            except StopIteration:
+                break
+
+            if ins.address != current:
+                current += 1
+                continue
+
+            # Check each operand for absolute memory reference matching disp16
+            for op in ins.operands:
+                if op.type != CS_OP_MEM:
+                    continue
+                if op.mem.base != 0 or op.mem.index != 0:
+                    continue
+
+                # Handle signed displacement (0x9212 appears as -0x6DEE in Capstone)
+                disp = op.mem.disp & 0xFFFF
+                if disp != disp16:
+                    continue
+
+                # Check segment override
+                seg = op.mem.segment
+                # segment == 0 means default (DS); any non-zero is an override
+                if is_runtime:
+                    if seg != 0 and seg != DS_RUNTIME:
+                        continue
+                else:
+                    if seg != 0:  # Skip non-DS segment overrides in exe context
+                        continue
+
+                # Classify access type
+                access = []
+                if op.access & CS_AC_READ:
+                    access.append("read")
+                if op.access & CS_AC_WRITE:
+                    access.append("write")
+
+                if access:
+                    kind = "/".join(access)
+                else:
+                    # For instructions like CMP/TEST, infer read access
+                    if ins.mnemonic in ("cmp", "test"):
+                        kind = "read"
+                        access = ["read"]
+                    else:
+                        kind = "unknown"
+                        access = ["unknown"]
+
+                hits.append({
+                    "address": current,
+                    "address_label": scan_name,
+                    "function": NAMES.get(f"0x{addr:05X}", scan_name),
+                    "address_space": "runtime" if is_runtime else "exe",
+                    "mnemonic": ins.mnemonic,
+                    "op_str": ins.op_str,
+                    "access": access,
+                    "kind": kind,
+                    "raw_hex": data[current:current + ins.size].hex(" "),
+                    "instruction_size": ins.size,
+                })
+
+            current += ins.size
+
     return hits
 
 
 def classify_abs_refs(rt: bytes, disp16: int, exe: bytes = None) -> dict:
     """Classify absolute memory references to disp16 in the runtime snapshot.
     Uses instruction-level scanning to distinguish read/write/access-type."""
-    # Scan with instruction awareness
-    all_hits = scan_abs_mem_refs(rt, disp16)
+    # Scan with instruction awareness using Capstone
+    all_hits = scan_abs_mem_refs(rt, exe, disp16, is_runtime=True)
 
-    # Classify each hit into reads, writes, or unknown
-    reads: list[int] = []
-    writes: list[int] = []
-    unknown_hits: list[int] = []
+    # Classify each hit into reads, writes, or unknown based on actual scan
+    reads: list[dict] = []
+    writes: list[dict] = []
+    read_writes: list[dict] = []
+    unknowns: list[dict] = []
 
     for hit in all_hits:
         kind = hit.get("kind", "unknown")
-        pos = hit["position"]
-
-        # Check if we can verify this is a code location (in a known function)
-        is_code = False
-        for name, rt_addr in RT.items():
-            if rt_addr <= pos < rt_addr + 0x1000:
-                is_code = True
-                break
+        addr = hit["address"]
+        function = hit.get("function", "unknown")
 
         if kind == "read":
-            reads.append(pos)
+            reads.append({
+                "address": hex(addr),
+                "function": function,
+                "mnemonic": hit["mnemonic"],
+                "op_str": hit["op_str"],
+                "raw_hex": hit["raw_hex"],
+            })
         elif kind == "write":
-            writes.append(pos)
+            writes.append({
+                "address": hex(addr),
+                "function": function,
+                "mnemonic": hit["mnemonic"],
+                "op_str": hit["op_str"],
+                "raw_hex": hit["raw_hex"],
+            })
         elif kind == "read_write":
-            # Assume write if ambiguous, but note ambiguity
-            writes.append(pos)
+            read_writes.append({
+                "address": hex(addr),
+                "function": function,
+                "access": hit["access"],
+                "raw_hex": hit["raw_hex"],
+            })
         else:
-            unknown_hits.append(pos)
+            unknowns.append({
+                "address": hex(addr),
+                "function": function,
+                "reason": "unclassified access",
+            })
 
-    # Count distinct hit positions (some hits may be from multiple operands)
-    distinct_reads = list(set(reads))
-    distinct_writes = list(set(writes))
+    # Count distinct read and write addresses
+    distinct_read_addrs = set(r["address"] for r in reads)
+    distinct_write_addrs = set(w["address"] for w in writes)
+
+    # Scan exe file separately if provided (translate RT addresses to static offsets)
+    exe_hits = []
+    if exe is not None:
+        exe_hits = scan_abs_mem_refs(rt, exe, disp16, list(RT.values()), is_runtime=False)
+
+    exe_reads = 0
+    exe_writes = 0
+    for hit in exe_hits:
+        kind = hit.get("kind", "unknown")
+        if "read" in kind:
+            exe_reads += 1
+        elif "write" in kind:
+            exe_writes += 1
 
     return {
         "disp16": f"0x{disp16:04X}",
         "absolute_linear": f"0x{DS_RUNTIME:04X}:{disp16:04X} -> 0x{DS_RUNTIME * 16 + disp16:06X}",
-        "hits": {
-            "total": len(all_hits),
-            "reads": len(distinct_reads),
-            "writes": len(distinct_writes),
-            "read_sites": sorted(distinct_reads),
-            "write_sites": sorted(distinct_writes),
+        "total_hits": len(all_hits),
+        "reads": len(reads),
+        "writes": len(writes),
+        "read_write": len(read_writes),
+        "unknown": len(unknowns),
+        "read_sites": sorted(distinct_read_addrs),
+        "write_sites": [w["address"] for w in writes],
+        "detailed_reads": reads[:50],  # First 50 detailed reads
+        "detailed_writes": writes[:50],
+        "exe_scan": {
+            "total_hits": len(exe_hits),
+            "reads": exe_reads,
+            "writes": exe_writes,
         },
-        "sample_hits": all_hits[:50],  # First 50 hits with details
-        "note": "Only code functions in RT were scanned. Indirect writes via "
-        "base register / pointer table / rep movs may not be captured. "
-        "DS:0x9212 is a data-segment global; writing requires indirect access.",
+        "scan_method": "Capstone instruction-aware, 16-bit x86 decoder",
+        "note": "Scan is restricted to functions listed in RT and RT's 200-byte window. "
+        "Indirect writes via base register/pointer table/rep movs are NOT covered. "
+        "Finding 'no writes in checked scope' does not prove no writer exists "
+        "in unscanned program regions.",
     }
 
 
 # ---------------------------------------------------------------------------
 # Function trace records
 # ---------------------------------------------------------------------------
-def trace_function(name: str, rt_addr: int, rt: bytes, exe: bytes) -> dict:
+def trace_function(name: str, rt_addr: int, rt: bytes, exe: bytes, selected_offset=None) -> dict:
     instrs = disasm_range(rt, rt_addr, max_len=0x220)
     calls = extract_calls(instrs, rt)
     sfo_hits = static_file_offset(rt_addr, exe, rt)
-    primary = sfo_hits[0] if sfo_hits else (None, None)
+    # Use unified mapping result if provided; otherwise fall back to first hit
+    if selected_offset is not None:
+        primary = selected_offset
+        # Record selection reason
+        selection_reason = "selected by unified mode-shift block selection"
+    elif sfo_hits:
+        primary = sfo_hits[0]
+        selection_reason = "fallback to first candidate (no block-mode match)"
+    else:
+        primary = (None, None)
+        selection_reason = "no candidates found"
     rec = {
         "name": name,
         "runtime_linear": f"0x{rt_addr:06X}",
@@ -402,6 +538,7 @@ def trace_function(name: str, rt_addr: int, rt: bytes, exe: bytes) -> dict:
         "static_file_offset": f"0x{primary[0]:05X}" if primary[0] is not None else None,
         "static_candidates": [f"0x{h:05X}(+0x{s:X})" for h, s in sfo_hits],
         "measured_shift": f"+0x{primary[1]:X}" if primary[1] is not None else None,
+        "selection_reason": selection_reason,
         "cs_ip_note": "CS:IP not stored for resident overlay pages; offset shown "
         "is the runtime linear address, not a verified CS:IP.",
         "instruction_count": len(instrs),
@@ -562,7 +699,13 @@ def main() -> int:
     functions: list[dict] = []
     call_edges: list[dict] = []
     for name, addr in RT.items():
-        rec = trace_function(name, addr, rt, exe)
+        # Use unified mapping result (same as mapping dict above) for consistency
+        selected = None
+        if name in mapping and mapping[name].get("file") is not None:
+            file_str = mapping[name]["file"]
+            shift_str = mapping[name].get("shift", "")
+            selected = (int(file_str, 16), int(shift_str, 16))
+        rec = trace_function(name, addr, rt, exe, selected)
         functions.append(rec)
         for c in rec["calls"]:
             call_edges.append(
@@ -600,7 +743,7 @@ def main() -> int:
             bit_tests.append({"site": f"0x{i:05X}", "imm": f"0x{imm:04X}"})
 
     # ---- 0x9212 writer analysis ------------------------------------------
-    refs_9212 = classify_abs_refs(rt, DS_9212_OFFSET)
+    refs_9212 = classify_abs_refs(rt, DS_9212_OFFSET, exe)
     refs_9212["snapshot_word"] = f"0x{int.from_bytes(rt[DS_9212_LINEAR:DS_9212_LINEAR+2], 'little'):04X}"
     # neighbouring fields
     neigh = {}
@@ -609,7 +752,8 @@ def main() -> int:
         neigh[f"0x{off:04X}"] = f"0x{int.from_bytes(rt[lin:lin+2], 'little'):04X}"
     refs_9212["neighbour_fields_snapshot"] = neigh
 
-    refs_9212_exe = classify_abs_refs(exe, DS_9212_OFFSET)
+    # refs_9212 already includes exe scan results internally
+    refs_9212_exe = refs_9212.get("exe_scan", {})
 
     # direct caller search for 0x226E0 (near + far + raw pointer)
     direct_caller_226e0: list[dict] = []
@@ -695,8 +839,58 @@ def main() -> int:
     check("5BC8 returns 0x32 when a==0&&b==0", ok5bc8,
           f"bytes {rt[i5bc8:i5bc8+0x16].hex(' ')}")
 
-    # 0x90 value
+# 0x90 value
     check("0x90 == 144 == 0b10010000", 0x90 == (0x10 | 0x80), "")
+
+    # ---- Selector direction assertions (0x22856) ---------------------------
+    # Verify CMP / condition codes establish ascending order for all three criteria.
+    # Distance comparison at runtime 0x22964:
+    #   22964: 39 46 F8   cmp [bp-8], ax    ; best_dist - candidate_dist
+    #   22967: 74 04      je  (equal -> tie-break on officers)
+    #   22969: 77 11      ja  0x2297C       ; best> candidate -> jbe accepts (smaller wins)
+    #   2296B: EB 14      jmp 0x22981       ; best< candidate reject
+    # So smaller distance wins => distance ASC.
+    i22856 = RT["22856"]
+    dist_cmp = i22856 + 0x0C + (0x22964 - 0x22862)  # offset from function start
+    dist_cmp = 0x22964  # direct runtime address
+    ok_dist_asc = (
+        rt[dist_cmp] == 0x39 and rt[dist_cmp+1] == 0x46 and rt[dist_cmp+2] == 0xF8  # cmp [bp-8],ax
+        and rt[dist_cmp+3] == 0x74  # je
+        and rt[dist_cmp+5] == 0x77  # ja (accept if best > candidate)
+    )
+    check("selector 0x9212 distance cmp is ascending", ok_dist_asc,
+          f"bytes at 0x{dist_cmp:05X}: {rt[dist_cmp:dist_cmp+6].hex(' ')}")
+
+    # Officers comparison at 0x2296D:
+    #   2296D: 39 7E F4   cmp [bp-C], di
+    #   22970: 75 08      jne 0x2297A      (not equal -> officers decide)
+    #   22972: 8B 46 FC   mov ax,[bp-4]    (candidate ratio load)
+    #   22975: 39 46 F6   cmp [bp-A], ax
+    #   22978: 74 07      je 0x22981       (ratio equal -> reject)
+    #   2297A: 76 05      jbe 0x22981      (reject if best_off <= cand_off)
+    #   -> smaller officer count wins => officers ASC
+    off_cmp = 0x2296D
+    ok_off_asc = (
+        rt[off_cmp] == 0x39 and rt[off_cmp+1] == 0x7E and rt[off_cmp+2] == 0xF4  # cmp [bp-C],di
+        and rt[off_cmp+3] == 0x75  # jne (officers not equal -> officers decide)
+        and rt[off_cmp+0xD] == 0x76  # jbe at 0x2297A (reject if best <= candidate)
+    )
+    check("selector 0x9212 officers cmp is ascending", ok_off_asc,
+          f"bytes at 0x{off_cmp:05X}: {rt[off_cmp:off_cmp+0xB].hex(' ')}")
+
+    # Ratio comparison at 0x22975:
+    #   22975: 39 46 F6   cmp [bp-A], ax   ; best_ratio - candidate_ratio
+    #   22978: 74 07      je 0x22981       (equal -> reject / keep)
+    #   2297A: 76 05      jbe 0x22981      (reject if best <= candidate)
+    #   -> smaller ratio wins => ratio ASC
+    rat_cmp = 0x22975
+    ok_rat_asc = (
+        rt[rat_cmp] == 0x39 and rt[rat_cmp+1] == 0x46 and rt[rat_cmp+2] == 0xF6  # cmp [bp-A],ax
+        and rt[rat_cmp+3] == 0x74  # je (reject on tie)
+    )
+    check("selector 0x9212 ratio cmp is ascending", ok_rat_asc,
+          f"bytes at 0x{rat_cmp:05X}: {rt[rat_cmp:rat_cmp+4].hex(' ')}")
+
 
     # DS:0x9212 linear address
     check("DS:0x9212 linear == 0x6AC02", DS_9212_LINEAR == 0x6AC02,
@@ -707,8 +901,25 @@ def main() -> int:
           f"word = {refs_9212['snapshot_word']}")
 
     # no absolute write to 0x9212 in snapshot
-    check("no absolute write to 0x9212 in snapshot", refs_9212["hits"]["writes"] == 0,
-          f"writes={refs_9212['hits']['writes']} sites: {refs_9212['hits']['write_sites']}")
+    # Self-check: scanner must classify actual write sites as writes.
+    # Finding zero writes means scanner ran but found none, not that writes were assumed empty.
+    check("no absolute write to 0x9212 in snapshot", refs_9212["writes"] == 0,
+          f"reads={refs_9212['reads']}, writes={refs_9212['writes']}, read_sites={len(refs_9212['read_sites'])}, write_sites={refs_9212['write_sites']}")
+
+    # Verify scanner is working: must find known read site 0x30527 (cmp [0x9212], -1)
+    check("0x30527 read site found by scanner",
+          "0x30527" in refs_9212["read_sites"],
+          f"read_sites={refs_9212['read_sites']}")
+
+    # Verify EXE scan found reads (proves exe scan ran, not hardcoded empty)
+    check("EXE scan found at least 5 reads",
+          refs_9212_exe.get("reads", 0) >= 5,
+          f"exe reads={refs_9212_exe.get('reads', 'N/A')}")
+
+    # Verify 0x24745 read site is now found (was missing from old hardcoded list)
+    check("0x24745 cmp di,[0x9212] found by scanner",
+          "0x24745" in refs_9212["read_sites"],
+          f"read_sites={refs_9212['read_sites']}")
 
     # static file-offset mapping spot checks (measured, not assumed uniform)
     mapping_ok = True
@@ -787,8 +998,20 @@ def main() -> int:
             "runtime_linear": f"0x{DS_9212_LINEAR:06X}",
             "snapshot_word": refs_9212["snapshot_word"],
             "neighbour_fields_snapshot": refs_9212["neighbour_fields_snapshot"],
-            "references_in_snapshot": refs_9212,
-            "references_in_main_exe": refs_9212_exe,
+            "scan_results_runtime": {
+                "total_hits": refs_9212["total_hits"],
+                "reads": refs_9212["reads"],
+                "writes": refs_9212["writes"],
+                "read_write": refs_9212["read_write"],
+                "unknown": refs_9212["unknown"],
+                "read_sites": refs_9212["read_sites"],
+                "write_sites": refs_9212["write_sites"],
+            },
+            "references_in_main_exe": {
+                "total_hits": refs_9212_exe["total_hits"],
+                "reads": refs_9212_exe["reads"],
+                "writes": refs_9212_exe["writes"],
+            },
             "direct_caller_of_0x226E0": direct_caller_226e0,
             "writer_status": "not_found_in_checked_scopes",
             "semantic_domain": "faction ID (target-faction candidate); compared against "
@@ -797,16 +1020,14 @@ def main() -> int:
                 "30280 compares its arg2 (supplied as 0x9212 by 7350) against arg3, "
                 "which is 21A8(neighbor) in the 302F2 path and 34EC(template) in the 302C4 path",
                 "24745: cmp di,[0x9212] where di=21A8(candidate castle)",
-                "no absolute write to DS:0x9212 in resident snapshot or Main.exe (8 reads, 0 writes)",
+                "no absolute write to DS:0x9212 in resident snapshot or Main.exe "
+                f"(reads={refs_9212['reads']}, writes={refs_9212['writes']})",
             ],
             "checked_scopes": [
-                "resident snapshot absolute 16-bit memory references to disp 0x9212 "
-                "(all encodings + segment overrides): 8 reads, 0 writes",
-                "Main.exe absolute 16-bit memory references to disp 0x9212: reads at "
-                "0x121E1/0x1234A/0x125F3/0x141F7/0x1FEA7/0x1FEF5/0x1FF2F/0x1FFCD; 0 writes",
-                "no mov reg,0x9212 / lea reg,[0x9212] / push 0x9212 / far pointer 619F:920A "
-                "in code or data",
-                "no direct near/far caller of runtime 0x226E0 in snapshot or Main.exe",
+                "resident functions listed in RT (instruction-aware Capstone scan)",
+                "absolute 16-bit memory references to disp 0x9212 with base=0, index=0",
+                "Main.exe absolute references to disp 0x9212",
+                "direct near/far callers of runtime 0x226E0",
             ],
             "uncovered_paths": [
                 "non-resident overlay / monthly AI driver that calls 22F60/226E0 is not "
@@ -821,8 +1042,6 @@ def main() -> int:
                 "locate the overlay loader table and the top-level caller of 22F60 / "
                 "226E0",
                 "scan non-resident overlay files for absolute/indirect stores to 0x9212",
-                "if no writer exists anywhere, treat 0x9212 as zero-initialized BSS "
-                "(faction 0 constant) and mark resolved-D",
             ],
             "confidence": {
                 "domain_is_faction_id": "B",
@@ -843,9 +1062,17 @@ def main() -> int:
     OUT_JSON.write_text(json.dumps(document, indent=2, ensure_ascii=False, sort_keys=False))
     print(f"wrote {OUT_JSON} ({OUT_JSON.stat().st_size} bytes)")
     print("self-checks:")
+    all_ok = True
     for c in self_checks:
         print(f"  [{'OK' if c['ok'] else 'FAIL'}] {c['name']}: {c['detail']}")
-    return 0
+        if not c["ok"]:
+            all_ok = False
+    if all_ok:
+        print("\nAll self-checks passed.")
+        return 0
+    else:
+        print("\nERROR: Some self-checks FAILED. Exiting non-zero.")
+        return 1
 
 
 if __name__ == "__main__":

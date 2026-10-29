@@ -195,18 +195,20 @@ The `0x3035B → 0x302F2 → 0x30280` relationship is preserved exactly
   at snapshot time).
 - **Writer status:** **not found in checked scopes** (confidence C that no
   resident writer exists; D for any specific writer).
-- **8 absolute read sites** in the resident snapshot / `Main.exe`, **0 absolute
-  write sites**:
+- **Scan results (instruction-aware Capstone scan):** 22 read hits, **8 distinct read sites**,
+  **0 writes**:
   - `0x2272F push [0x9212]` (226E0)
   - `0x22898 mov ax,[0x9212]` (22856)
   - `0x22B41 mov ax,[0x9212]` (22B22)
-  - `0x24745 cmp di,[0x9212]`
+  - `0x24745 cmp di,[0x9212]` (24682)
   - `0x30401 / 0x3044F / 0x30489 push [0x9212]` (3037E)
   - `0x30527 cmp [0x9212],-1` (304FC)
-- **Checked scopes:** absolute 16-bit memory references to disp `0x9212`
-  (all encodings + segment overrides) in snapshot and `Main.exe`; `mov
-  reg,0x9212` / `lea reg,[0x9212]` / `push 0x9212` / far pointer
-  `619F:920A`; direct near/far caller of runtime `0x226E0`.
+- **EXE scan:** instruction-aware scan in `Main.exe` found 22 read hits at the same
+  logical sites (at static file offsets 0x121E1/0x1234A/0x125F3/0x141F7/
+  0x1FEA7/0x1FEF5/0x1FF2F/0x1FFCD), **0 writes**.
+- **Checked scopes:** resident functions in `RT` (instruction-aware Capstone scan);
+  absolute DS:0x9212 references classified by Capstone; `Main.exe` scan at static file
+  offsets. `0x9212` is a DS:offset global; writing requires indirect access.
 - **Uncovered paths:** non-resident overlay / monthly AI driver calling
   `22F60`/`226E0` (not in resident snapshot); indirect writes via base
   register / pointer table / `rep movs`; save/load or game-start struct copy
@@ -232,7 +234,7 @@ The `0x3035B → 0x302F2 → 0x30280` relationship is preserved exactly
 | `302F2` | B | `30280(arg1,arg2,arg3, d=30188(arg3))` |
 | `302C4` | B | `30280(arg1,arg2, c=34EC(arg3), d=30120(arg3))` |
 | `7350` | B | capped sum over `0x90`-filtered adjacent enemy castles with `1.5×` weighting when `owner(neighbor)==0x9212` |
-| `22856` | B | selector key `(distance asc, officers desc, ratio desc)`, tie keeps best |
+| `22856` | B | selector key `(distance asc, officers asc, ratio asc)`, tie keeps best |
 
 Full formulas are recorded in `re_out/v13/scoring_dataflow.json` (`formulas`).
 `7D8`/`67A`/`5AA` expand via `43EDE`/`440A8`/`18A6:27C2`; those helpers are

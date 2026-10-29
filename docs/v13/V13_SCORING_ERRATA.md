@@ -117,7 +117,7 @@ field `21A8`** (`+0x28`).
 formalizes the unresolved writer.
 
 **V13 finding:** No absolute write to `DS:0x9212` exists in the resident
-snapshot or `Main.exe` (38 reads, 0 writes). No direct near/far caller of
+snapshot or `Main.exe` (22 read hits, 8 distinct read sites, 0 writes). No direct near/far caller of
 runtime `0x226E0` was found. The writer is **not in the checked scopes**.
 
 The current scan:
@@ -125,7 +125,7 @@ The current scan:
 - Only considered absolute DS:0x9212 references without base/index registers.
 - Scoped exclusively to resident functions listed in `RT` (0x226E0, 0x22856,
   0x22B22, 0x3037E, 0x304FC, etc.).
-- Found `38 distinct read sites` across those functions, no writes.
+- Found `22 read hits (8 distinct read sites)` across those functions, no writes.
 
 Confidence: domain B; "writer not resident" C; any specific writer D.
 
