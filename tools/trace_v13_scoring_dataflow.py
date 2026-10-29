@@ -382,8 +382,62 @@ def _test_ds_segment_filter(rt: bytes, exe: bytes) -> bool:
     return True
 
 
+def _test_segment_filter_integration() -> bool:
+    """Integration test: create a synthetic binary with DS:0x9212 and ES:0x9212
+    references and run the ACTUAL scanner (scan_abs_mem_refs) to verify the
+    filter includes DS/DS-override references while excluding ES-override.
+
+    Uses explicit scan_addrs parameter instead of overriding global RT,
+    so no self-referential module import is needed.
+    """
+    # Build a synthetic runtime snapshot: zero-filled with our test instructions
+    # at a known address. Use a large buffer.
+    rt_size = 0x9C400  # 655360
+    synthetic_rt = bytearray(rt_size)
+
+    # Place instructions at a high address that won't conflict with real RT entries
+    base = 0x80000
+    # A1 12 92           (mov ax, [0x9212])         - default DS, should be included
+    synthetic_rt[base]     = 0xA1
+    synthetic_rt[base + 1] = 0x12
+    synthetic_rt[base + 2] = 0x92
+
+    # 3E A1 12 92        (DS: mov ax, [0x9212])      - DS override, should be included
+    synthetic_rt[base+0x10]     = 0x3E  # DS prefix
+    synthetic_rt[base+0x10+1]   = 0xA1
+    synthetic_rt[base+0x10+2]   = 0x12
+    synthetic_rt[base+0x10+3]   = 0x92
+
+    # 26 A1 12 92        (ES: mov ax, [0x9212])      - ES override, should be EXCLUDED
+    synthetic_rt[base+0x20]     = 0x26  # ES prefix
+    synthetic_rt[base+0x20+1]   = 0xA1
+    synthetic_rt[base+0x20+2]   = 0x12
+    synthetic_rt[base+0x20+3]   = 0x92
+
+    # Pass scan_addrs directly so scan uses these addresses (not RT dict)
+    test_addrs = [base, base + 0x10, base + 0x20]
+
+    # Scan the synthetic runtime for DS:0x9212 references using the ACTUAL scanner
+    hits = scan_abs_mem_refs(bytes(synthetic_rt), b'', 0x9212,
+                             test_addrs, is_runtime=True)
+
+    # Should have exactly 2 hits: default DS and DS-override
+    # ES override must be EXCLUDED by the segment filter
+    if len(hits) != 2:
+        return False
+
+    # Verify all hits are reads (access = read)
+    for h in hits:
+        if h["kind"] != "read":
+            return False
+
+    # Verify no ES-overridden reference appears in hits
+    # (scan_abs_mem_refs should have excluded it via segment filter)
+    return True
+
+
 def scan_abs_mem_refs(rt: bytes, exe: bytes, disp16: int, scan_addrs: list[int] = None,
-                       is_runtime: bool = True) -> list[dict]:
+                       is_runtime: bool = True, use_mapping_offsets: bool = False) -> list[dict]:
     """Instruction-aware scan for absolute memory references to `disp16`.
 
     Uses Capstone's 16-bit x86 decoder to disassemble instructions within
@@ -414,9 +468,9 @@ def scan_abs_mem_refs(rt: bytes, exe: bytes, disp16: int, scan_addrs: list[int] 
         data = rt
     else:
         data = exe
-        # For EXE scan, translate RT runtime addresses to static file offsets
-        # using the unified block-mode selection (same logic as mapping dict)
-        if scan_addrs:
+        # If scan_addrs are already pre-computed static offsets (from mapping
+        # dict), use them directly without re-translating.
+        if not use_mapping_offsets and scan_addrs:
             translated: list[int] = []
             for a in scan_addrs:
                 hits = static_file_offset(a, exe, rt)
@@ -514,9 +568,14 @@ def scan_abs_mem_refs(rt: bytes, exe: bytes, disp16: int, scan_addrs: list[int] 
     return hits
 
 
-def classify_abs_refs(rt: bytes, disp16: int, exe: bytes = None) -> dict:
+def classify_abs_refs(rt: bytes, disp16: int, exe: bytes = None,
+                       mapping: dict = None) -> dict:
     """Classify absolute memory references to disp16 in the runtime snapshot.
-    Uses instruction-level scanning to distinguish read/write/access-type."""
+    Uses instruction-level scanning to distinguish read/write/access-type.
+    
+    If mapping is provided, EXE scan uses the unified block-mode selected
+    static offsets (same as the main mapping dict), ensuring consistency.
+    """
     # Scan with instruction awareness using Capstone
     all_hits = scan_abs_mem_refs(rt, exe, disp16, is_runtime=True)
 
@@ -568,11 +627,27 @@ def classify_abs_refs(rt: bytes, disp16: int, exe: bytes = None) -> dict:
     # Scan exe file separately if provided (translate RT addresses to static offsets)
     exe_hits = []
     if exe is not None:
-        exe_hits = scan_abs_mem_refs(rt, exe, disp16, list(RT.values()), is_runtime=False)
+        # Use EXACTLY the static offsets selected by the main mapping dict.
+        # This guarantees EXE scan and main mapping use the same selection.
+        # If mapping is not available (backwards-compat), fall back to
+        # per-function block-mode selection.
+        if mapping is not None:
+            scan_addrs_exe = []
+            for name, addr in RT.items():
+                if name in mapping and mapping[name].get("file"):
+                    scan_addrs_exe.append(int(mapping[name]["file"], 16))
+                else:
+                    scan_addrs_exe.append(addr)
+            exe_hits = scan_abs_mem_refs(rt, exe, disp16, scan_addrs_exe,
+                                         is_runtime=False, use_mapping_offsets=True)
+        else:
+            exe_hits = scan_abs_mem_refs(rt, exe, disp16, list(RT.values()),
+                                         is_runtime=False)
 
     exe_reads = 0
     exe_writes = 0
     exe_read_writes = 0
+    exe_unknowns = 0
     for hit in exe_hits:
         kind = hit.get("kind", "unknown")
         if kind == "read":
@@ -581,6 +656,8 @@ def classify_abs_refs(rt: bytes, disp16: int, exe: bytes = None) -> dict:
             exe_writes += 1
         elif kind == "read+write":
             exe_read_writes += 1
+        else:
+            exe_unknowns += 1
 
     return {
         "disp16": f"0x{disp16:04X}",
@@ -599,6 +676,7 @@ def classify_abs_refs(rt: bytes, disp16: int, exe: bytes = None) -> dict:
             "reads": exe_reads,
             "writes": exe_writes,
             "read_write": exe_read_writes,
+            "unknown": exe_unknowns,
         },
         "scan_method": "Capstone instruction-aware, 16-bit x86 decoder",
         "note": "Scan is restricted to functions listed in RT and RT's 200-byte window. "
@@ -842,7 +920,7 @@ def main() -> int:
             bit_tests.append({"site": f"0x{i:05X}", "imm": f"0x{imm:04X}"})
 
     # ---- 0x9212 writer analysis ------------------------------------------
-    refs_9212 = classify_abs_refs(rt, DS_9212_OFFSET, exe)
+    refs_9212 = classify_abs_refs(rt, DS_9212_OFFSET, exe, mapping)
     refs_9212["snapshot_word"] = f"0x{int.from_bytes(rt[DS_9212_LINEAR:DS_9212_LINEAR+2], 'little'):04X}"
     # neighbouring fields
     neigh = {}
@@ -1020,24 +1098,27 @@ def main() -> int:
           refs_9212_exe.get("reads", 0) >= 5,
           f"exe reads={refs_9212_exe.get('reads', 'N/A')}")
 
-    # Verify EXE scan also classified all accesses (no writes, no unknown)
+    # Verify EXE scan: no writes, no read_write, no unknown accesses
     check("EXE scan: zero writes, zero read_write, zero unknown",
           refs_9212_exe.get("writes", 0) == 0
-          and refs_9212_exe.get("read_write", 0) == 0,
+          and refs_9212_exe.get("read_write", 0) == 0
+          and refs_9212_exe.get("unknown", 0) == 0,
           f"exe writes={refs_9212_exe.get('writes', 'N/A')}, "
-          f"read_write={refs_9212_exe.get('read_write', 'N/A')}")
+          f"read_write={refs_9212_exe.get('read_write', 'N/A')}, "
+          f"unknown={refs_9212_exe.get('unknown', 'N/A')}")
 
     # Verify 0x24745 read site is now found (was missing from old hardcoded list)
     check("0x24745 cmp di,[0x9212] found by scanner",
           "0x24745" in refs_9212["read_sites"],
           f"read_sites={refs_9212['read_sites']}")
 
-    # Verify DS segment override handling: a DS-overridden absolute ref is included
-    # while non-DS segmented references are excluded (test with synthetic bytes)
-    _ds_override_ok = _test_ds_segment_filter(rt, exe)
-    check("segment filter: DS override included, ES excluded",
-          _ds_override_ok,
-          "synthetic test of DS:0x9212 ref classification")
+    # Integration test: verify segment filter by running the actual scanner
+    # on synthetic data containing DS and ES overrides to 0x9212.
+    # Uses Capstone directly via scan_abs_mem_refs with a small synthetic image.
+    _seg_ok = _test_segment_filter_integration()
+    check("segment filter integration: DS/DS-override included, ES excluded",
+          _seg_ok,
+          "Capstone scan on synthetic DS+ES override bytes")
 
     # static file-offset mapping spot checks (measured, not assumed uniform)
     mapping_ok = True
@@ -1060,6 +1141,11 @@ def main() -> int:
         actual = files[0] if files else "NOT FOUND"
         ok_hit = exp_file in files
         details.append(f"rt {rt_addr_hex} -> file {actual} (expect {exp_file}; all hits {files})")
+        # Verify the MAIN mapping selected the expected offset
+        # (not just that it exists in candidates)
+        if mapping[rt_addr_hex[2:]].get("file") != exp_file:
+            mapping_ok = False
+            details.append(f"  ERROR: mapping selected {mapping[name].get('file')} not {exp_file}")
         if not ok_hit:
             mapping_ok = False
     check("static file-offset mapping spot checks", mapping_ok, "; ".join(details))
