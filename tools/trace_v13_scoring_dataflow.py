@@ -1216,6 +1216,7 @@ def main() -> int:
                 "reads": refs_9212_exe["reads"],
                 "writes": refs_9212_exe["writes"],
                 "read_write": refs_9212_exe.get("read_write", 0),
+                "unknown": refs_9212_exe.get("unknown", 0),
             },
             "direct_caller_of_0x226E0": direct_caller_226e0,
             "writer_status": "not_found_in_checked_scopes",

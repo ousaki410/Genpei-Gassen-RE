@@ -48,7 +48,7 @@ python3 tools/trace_v13_scoring_dataflow.py
 The script verifies both input MD5s before emitting
 `re_out/v13/scoring_dataflow.json`. Two consecutive runs produce byte-identical
 output (deterministic, no timestamps). The JSON SHA-256 is
-`3add1126241b81fdb4cb492dd880fa4a0fad447cb7903e4c645a34424f9693c1`.
+`8948886191256bf35f76d9f5c437ae2298815dc855bce82a6b38bda06a52e7c2`.
 
 All 23 self-checks pass (input hashes, `0x3035B→0x302F2→0x30280` chain,
 `7350` pushes `0x90` then calls `2F6AE`, `2F5D2` bit tests `0x10`/`0x80`,
