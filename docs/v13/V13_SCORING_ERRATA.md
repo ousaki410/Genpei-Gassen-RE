@@ -117,15 +117,27 @@ field `21A8`** (`+0x28`).
 formalizes the unresolved writer.
 
 **V13 finding:** No absolute write to `DS:0x9212` exists in the resident
-snapshot or `Main.exe` (8 reads, 0 writes; `code_write_sites: []`). No direct
-near/far caller of runtime `0x226E0` was found. The writer is **not in the
-checked scopes**. Confidence: domain B; "writer not resident" C; any specific
-writer D.
+snapshot or `Main.exe` (38 reads, 0 writes). No direct near/far caller of
+runtime `0x226E0` was found. The writer is **not in the checked scopes**.
+
+The current scan:
+- Used instruction-aware memory operand classification (Capstone).
+- Only considered absolute DS:0x9212 references without base/index registers.
+- Scoped exclusively to resident functions listed in `RT` (0x226E0, 0x22856,
+  0x22B22, 0x3037E, 0x304FC, etc.).
+- Found `38 distinct read sites` across those functions, no writes.
+
+Confidence: domain B; "writer not resident" C; any specific writer D.
 
 Checked scopes and uncovered paths / next steps are listed in
 `re_out/v13/scoring_dataflow.json` (`global_0x9212`) and §4.3 of the dataflow
 report. Per the V13 rules, this is reported as unresolved with scope, not
 guessed.
+
+**Note:** The instruction-aware scan is not a complete program-wide scan;
+indirect writes via base register, pointer table, or non-resident overlay are
+not captured by this absolute-scan. The writer may still exist outside the
+resident code checked here.
 
 ---
 

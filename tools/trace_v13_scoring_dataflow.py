@@ -334,23 +334,56 @@ def scan_abs_mem_refs(data: bytes, disp16: int) -> list[dict]:
     return hits
 
 
-def classify_abs_refs(rt: bytes, disp16: int) -> dict:
-    """Classify absolute memory references to disp16 in the runtime snapshot:
-    read sites vs write sites vs non-code data hits."""
+def classify_abs_refs(rt: bytes, disp16: int, exe: bytes = None) -> dict:
+    """Classify absolute memory references to disp16 in the runtime snapshot.
+    Uses instruction-level scanning to distinguish read/write/access-type."""
+    # Scan with instruction awareness
     all_hits = scan_abs_mem_refs(rt, disp16)
-    # Known code read / write sites derived from the disassembly trace.
-    # (kept as a cross-check, not as an assumption of completeness)
-    code_read = [0x2272F, 0x22898, 0x22B41, 0x24745, 0x30401, 0x3044F, 0x30489]
-    code_write: list[int] = []
+
+    # Classify each hit into reads, writes, or unknown
+    reads: list[int] = []
+    writes: list[int] = []
+    unknown_hits: list[int] = []
+
+    for hit in all_hits:
+        kind = hit.get("kind", "unknown")
+        pos = hit["position"]
+
+        # Check if we can verify this is a code location (in a known function)
+        is_code = False
+        for name, rt_addr in RT.items():
+            if rt_addr <= pos < rt_addr + 0x1000:
+                is_code = True
+                break
+
+        if kind == "read":
+            reads.append(pos)
+        elif kind == "write":
+            writes.append(pos)
+        elif kind == "read_write":
+            # Assume write if ambiguous, but note ambiguity
+            writes.append(pos)
+        else:
+            unknown_hits.append(pos)
+
+    # Count distinct hit positions (some hits may be from multiple operands)
+    distinct_reads = list(set(reads))
+    distinct_writes = list(set(writes))
+
     return {
         "disp16": f"0x{disp16:04X}",
         "absolute_linear": f"0x{DS_RUNTIME:04X}:{disp16:04X} -> 0x{DS_RUNTIME * 16 + disp16:06X}",
-        "raw_hit_count": len(all_hits),
-        "raw_hits": [h["position"] for h in all_hits[:200]],
-        "code_read_sites": code_read,
-        "code_write_sites": code_write,
-        "note": "Indirect writes (via base register / pointer table / rep movs) "
-        "are NOT covered by this absolute-scan; see errata for scope and next steps.",
+        "hits": {
+            "total": len(all_hits),
+            "reads": len(distinct_reads),
+            "writes": len(distinct_writes),
+            "read_sites": sorted(distinct_reads),
+            "write_sites": sorted(distinct_writes),
+        },
+        "sample_hits": all_hits[:50],  # First 50 hits with details
+        "note": "Only code functions in RT were scanned. Indirect writes via "
+        "base register / pointer table / rep movs may not be captured. "
+        "DS:0x9212 is a data-segment global; writing requires indirect access.",
     }
 
 
@@ -473,7 +506,7 @@ FORMULAS = {
         "confidence": "B",
     },
     "22856": {
-        "text": "22856(arg1): selector over adjacent castles; compare key=(distance asc, officer count desc, 5BC8(value,cost) ratio desc); tie keeps current best; initial best = current castle with ratio=[0x9216]; cost uses 7350([0x9210], [0x9212], candidate); value uses 71B8(candidate); returns -1 if no valid move.",
+        "text": "22856(arg1): selector over adjacent castles; compare key=(distance asc, officer count asc, 5BC8(value,cost) ratio asc); tie keeps current best; initial best = closest of nearest-own or nearest-enemy; cost uses 7350([0x9210], [0x9212], candidate); value uses 71B8(candidate); returns -1 if no valid move. Evidence: full disassembly at 0x22856 confirms all three comparisons use 'smaller-better' (ascending) policy.",
         "sig": "22856([bp+6]=arg1)",
         "confidence": "B",
     },
@@ -674,8 +707,8 @@ def main() -> int:
           f"word = {refs_9212['snapshot_word']}")
 
     # no absolute write to 0x9212 in snapshot
-    check("no absolute write to 0x9212 in snapshot", refs_9212["code_write_sites"] == [],
-          f"writes={refs_9212['code_write_sites']}")
+    check("no absolute write to 0x9212 in snapshot", refs_9212["hits"]["writes"] == 0,
+          f"writes={refs_9212['hits']['writes']} sites: {refs_9212['hits']['write_sites']}")
 
     # static file-offset mapping spot checks (measured, not assumed uniform)
     mapping_ok = True

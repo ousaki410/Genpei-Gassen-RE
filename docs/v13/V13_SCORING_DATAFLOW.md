@@ -123,7 +123,14 @@ Data segment: `DS_RUNTIME = 0x619F` (verified via `stat_getters`/`stat_setters`/
   ├─ per adjacent slot: 2ED6(officers), 30FE(distance),
   │   7350([0x9210],[0x9212],cand), 71B8(cand),
   │   5BC8(value,cost)&0xFF -> ratio
-  └─ compare key = (distance asc, officers desc, ratio desc), tie keeps best
+  └─ compare key = (distance asc, officers asc, ratio asc), tie keeps best
+
+  *NOTE*: Disassembly at 0x22856 confirms all three comparisons use "smaller-better" policy:
+  - Distance: `cmp [bp-8], ax then ja` → accept if best_distance > candidate distance (ascending)
+  - Officers: `cmp [bp-0xc], di then jne; jbe` → accept if best_officers > candidate_officers (ascending)
+  - Ratio: `cmp [bp-0xa], ax then je; jbe` → accept if best_ratio > candidate_ratio (ascending)
+
+  Thus all criteria asc, selecting the closest and weakest target.
 
 7350(arg1=owner, arg2=[0x9212], arg3=ref_castle)
   ├─ flags = 0x90 -> 2F6AE(flags, ref, buf)
