@@ -331,30 +331,55 @@ def _get_block_mode_shift(rt_addr: int, candidates: list[tuple[int, int]]) -> in
 
 def _test_ds_segment_filter(rt: bytes, exe: bytes) -> bool:
     """Self-test: verify DS:0x9212 references are classified correctly relative
-    to segment overrides. Uses synthetic byte sequences."""
+    to segment overrides. Uses three synthetic byte sequences:
+
+    1. A1 12 92           -- mov ax, [0x9212]    (default DS)  -> INCLUDED as read
+    2. 3E A1 12 92        -- DS: mov ax, [0x9212] (DS override) -> INCLUDED as read
+    3. 26 A1 12 92        -- ES: mov ax, [0x9212] (ES override) -> EXCLUDED by filter
+    """
     from capstone import Cs, CS_OP_MEM, CS_AC_READ, CS_AC_WRITE, CS_ARCH_X86, CS_MODE_16
-    from capstone.x86 import X86_REG_DS
+    from capstone.x86 import X86_REG_DS, X86_REG_ES
 
     md = Cs(CS_ARCH_X86, CS_MODE_16)
     md.detail = True
 
-    # Synthetic test: mov ax, [0x9212] (default DS) -> should be counted as read
-    # Bytes: A1 12 92 (mov ax, [imm16])
-    test_ds_default = bytes([0xA1, 0x12, 0x92])
-    ins = next(md.disasm(test_ds_default, 0))
-    for op in ins.operands:
-        if op.type == CS_OP_MEM:
+    def _matches_and_seg(ins):
+        """Check if instruction matches DS:0x9212 filter criteria."""
+        for op in ins.operands:
+            if op.type != CS_OP_MEM:
+                continue
+            if op.mem.base != 0 or op.mem.index != 0:
+                continue
             disp = op.mem.disp & 0xFFFF
-            if disp == 0x9212 and op.mem.base == 0 and op.mem.index == 0:
-                # Should pass segment check (segment == 0 = default)
-                seg = op.mem.segment
-                if seg != 0 and seg != X86_REG_DS:
-                    return False
-                # Should be classified as read
-                if not (op.access & CS_AC_READ):
-                    return False
-                return True
-    return False
+            if disp != 0x9212:
+                continue
+            seg = op.mem.segment
+            # The FILTER in scan_abs_mem_refs excludes non-zero, non-DS segments
+            would_be_excluded = (seg != 0 and seg != X86_REG_DS)
+            return True, seg, would_be_excluded, bool(op.access & CS_AC_READ)
+        return False, None, None, False
+
+    # Test 1: A1 12 92 -- default DS (segment=0), INCLUDED, classified as read
+    ins1 = next(md.disasm(bytes([0xA1, 0x12, 0x92]), 0))
+    matched1, seg1, excl1, read1 = _matches_and_seg(ins1)
+    if not matched1 or seg1 != 0 or excl1 or not read1:
+        return False
+
+    # Test 2: 3E A1 12 92 -- DS override prefix (segment=X86_REG_DS), INCLUDED
+    ins2 = next(md.disasm(bytes([0x3E, 0xA1, 0x12, 0x92]), 0))
+    matched2, seg2, excl2, read2 = _matches_and_seg(ins2)
+    if not matched2 or seg2 != X86_REG_DS or excl2 or not read2:
+        return False
+
+    # Test 3: 26 A1 12 92 -- ES override prefix (segment=X86_REG_ES), EXCLUDED
+    ins3 = next(md.disasm(bytes([0x26, 0xA1, 0x12, 0x92]), 0))
+    matched3, seg3, excl3, read3 = _matches_and_seg(ins3)
+    # The operand exists and matches DS:0x9212 pattern, but segment is ES
+    # so the filter SHOULD exclude it (would_be_excluded = True)
+    if not matched3 or seg3 != X86_REG_ES or not excl3:
+        return False
+
+    return True
 
 
 def scan_abs_mem_refs(rt: bytes, exe: bytes, disp16: int, scan_addrs: list[int] = None,
@@ -547,12 +572,15 @@ def classify_abs_refs(rt: bytes, disp16: int, exe: bytes = None) -> dict:
 
     exe_reads = 0
     exe_writes = 0
+    exe_read_writes = 0
     for hit in exe_hits:
         kind = hit.get("kind", "unknown")
-        if "read" in kind:
+        if kind == "read":
             exe_reads += 1
-        elif "write" in kind:
+        elif kind == "write":
             exe_writes += 1
+        elif kind == "read+write":
+            exe_read_writes += 1
 
     return {
         "disp16": f"0x{disp16:04X}",
@@ -570,6 +598,7 @@ def classify_abs_refs(rt: bytes, disp16: int, exe: bytes = None) -> dict:
             "total_hits": len(exe_hits),
             "reads": exe_reads,
             "writes": exe_writes,
+            "read_write": exe_read_writes,
         },
         "scan_method": "Capstone instruction-aware, 16-bit x86 decoder",
         "note": "Scan is restricted to functions listed in RT and RT's 200-byte window. "
@@ -738,9 +767,13 @@ def main() -> int:
         block_shifts.setdefault(block, Counter())
         for _h, s in all_candidates[name]:
             block_shifts[block][s] += 1
-    block_mode: dict[int, int] = {
-        b: ctr.most_common(1)[0][0] for b, ctr in block_shifts.items()
-    }
+    # Deterministic block mode: pick smallest shift on ties
+    block_mode: dict[int, int] = {}
+    for b, ctr in block_shifts.items():
+        if ctr:
+            max_count = max(ctr.values())
+            tied = sorted(s for s, c in ctr.items() if c == max_count)
+            block_mode[b] = tied[0]
 
     mapping: dict[str, dict] = {}
     for name, addr in RT.items():
@@ -971,10 +1004,11 @@ def main() -> int:
     # Finding zero writes means scanner ran but found none, not that writes were
     # assumed empty. Also require zero unknown accesses (all classified).
     check("no absolute write to 0x9212 in snapshot",
-          refs_9212["writes"] == 0 and refs_9212["unknown"] == 0,
+          refs_9212["writes"] == 0 and refs_9212["unknown"] == 0
+          and refs_9212["read_write"] == 0,
           f"reads={refs_9212['reads']}, writes={refs_9212['writes']}, "
-          f"unknown={refs_9212['unknown']}, read_sites={len(refs_9212['read_sites'])}, "
-          f"write_sites={refs_9212['write_sites']}")
+          f"unknown={refs_9212['unknown']}, read_write={refs_9212['read_write']}, "
+          f"read_sites={len(refs_9212['read_sites'])}, write_sites={refs_9212['write_sites']}")
 
     # Verify scanner is working: must find known read site 0x30527 (cmp [0x9212], -1)
     check("0x30527 read site found by scanner",
@@ -985,6 +1019,13 @@ def main() -> int:
     check("EXE scan found at least 5 reads",
           refs_9212_exe.get("reads", 0) >= 5,
           f"exe reads={refs_9212_exe.get('reads', 'N/A')}")
+
+    # Verify EXE scan also classified all accesses (no writes, no unknown)
+    check("EXE scan: zero writes, zero read_write, zero unknown",
+          refs_9212_exe.get("writes", 0) == 0
+          and refs_9212_exe.get("read_write", 0) == 0,
+          f"exe writes={refs_9212_exe.get('writes', 'N/A')}, "
+          f"read_write={refs_9212_exe.get('read_write', 'N/A')}")
 
     # Verify 0x24745 read site is now found (was missing from old hardcoded list)
     check("0x24745 cmp di,[0x9212] found by scanner",
@@ -1088,6 +1129,7 @@ def main() -> int:
                 "total_hits": refs_9212_exe["total_hits"],
                 "reads": refs_9212_exe["reads"],
                 "writes": refs_9212_exe["writes"],
+                "read_write": refs_9212_exe.get("read_write", 0),
             },
             "direct_caller_of_0x226E0": direct_caller_226e0,
             "writer_status": "not_found_in_checked_scopes",
