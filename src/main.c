@@ -2072,13 +2072,14 @@ static void v10_selftest_run(void) {
     Scenario *real = (Scenario *)malloc(sizeof(Scenario));
     if (real && file_exists("games/yphz/Sndata.gp") &&
         scenario_load("games/yphz/Sndata.gp", 0, real)) {
-        printf("[V10] real d30_29=%d d30_0=%d friend30=%d enemy30=%d\n",
+        printf("[V10] real d30_29=%d d30_0=%d friend30=%d enemy30=%d ratio5bc8=%d\n",
                scenario_castle_distance(real, 30, 29),
                scenario_castle_distance(real, 30, 0),
                scenario_nearest_friendly_castle(
                    real, real->castles[30].faction_id, 30),
                scenario_nearest_enemy_castle(
-                   real, real->castles[30].faction_id, 30));
+                   real, real->castles[30].faction_id, 30),
+               ai_calc_ratio_5bc8(100, 100));
     } else {
         printf("[V10] real skipped\n");
     }

@@ -174,6 +174,24 @@ void ai_run_turn(TurnState *ts, Scenario *sc, AiReport *report) {
 }
 
 // ---------------------------------------------------------------------------
+// V10/V13: 3B1A:5BC8 ROI ratio calculator.
+//
+// In Main.exe at file offset 0x301c9 (runtime 3B1A:5BC8):
+//   ratio = (value * 100) / (value + cost), or 50 when value == cost == 0.
+// ---------------------------------------------------------------------------
+
+int ai_calc_ratio_5bc8(int value, int cost) {
+    if (value <= 0 && cost <= 0) return 50;
+    if (value <= 0) return 0;
+    int total = value + cost;
+    if (total <= 0) return 100;
+    int res = (value * 100) / total;
+    if (res > 100) res = 100;
+    if (res < 0) res = 0;
+    return res;
+}
+
+// ---------------------------------------------------------------------------
 // V10: strategic adjacent-target selector (linear 0x22856).
 //
 // The disassembly of 0x22856..0x229A5 establishes the complete control flow:
@@ -185,11 +203,6 @@ void ai_run_turn(TurnState *ts, Scenario *sc, AiReport *report) {
 //     that is not 0xFFFF, or on officers >= 15;
 //   - candidates are compared as (distance, officers, ratio), smallest wins;
 //   - only a strict improvement over the actor is accepted.
-//
-// The original ratio comes from 28FD:7350/71B8 and 3B1A:5BC8, where the
-// 5BC8(a,b) helper is (a+b)*100/a (50 when both inputs are 0).  The 7350
-// route-cost and 71B8 castle-value models are not reimplemented here; the
-// caller supplies the ratio so this function stays auditable.
 // ---------------------------------------------------------------------------
 
 int ai_choose_adjacent_target_22856(const Scenario *sc, int castle_id,

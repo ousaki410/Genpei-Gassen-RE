@@ -54,34 +54,20 @@ typedef struct {
 void ai_run_turn(TurnState *ts, Scenario *sc, AiReport *report);
 
 // ---------------------------------------------------------------------------
-// V10: strategic adjacent-target selector (43B3 overlay, linear 0x22856).
+// V10/V13: strategic adjacent-target selector (43B3 overlay, linear 0x22856)
+// and 3B1A:5BC8 ROI ratio calculator.
 //
 // The original function is reached from the per-castle decision context
-// prepared at linear 0x226E0.  Its inputs are the shared words:
+// prepared at linear 0x226E0. Its inputs are the shared words:
 //   0x920A acting castle, 0x920C reference castle A, 0x920E reference castle B,
 //   0x9210 actor faction, 0x9212 route-cost source, 0x9216 current ratio.
 //
-// For each of the acting castle's seven neighbours (43B3:20C6) it:
-//   * keeps the neighbour when owner == actor faction or owner == -1
-//     (43B3:21A8 / 221E);
-//   * rejects neighbours with 15 or more officers (43B3:2ED6 == 4000:5E1A);
-//   * computes matrix[neighbour][best_ref] with 43B3:30FE;
-//   * computes the original cost/value ratio through 28FD:7350 / 71B8 and
-//     3B1A:5BC8;
-//   * keeps the lexicographically smallest (distance, officer count, ratio),
-//     but only when it strictly improves on the acting castle itself.
-//
-// It returns -1 when nothing improves, which is the original's "stay put"
-// result.  The 7350/71B8 scoring model is NOT reimplemented here; score_fn
-// isolates it.  Passing a NULL score_fn keeps the actor's current ratio for
-// every candidate, so scoring cannot break a distance/officer-count tie.
-//
-// C-side safety: out-of-range ref_castle_a/ref_castle_b/route_source values
-// return -1; the original only rejects the 0xFFFF sentinel.
-//
-// Confidence: B for the control flow, field reads and ordering; C for the
-// caller-supplied score model.
+// 3B1A:5BC8 computes:
+//   ratio = (value * 100) / (value + cost), or 50 when value == cost == 0.
 // ---------------------------------------------------------------------------
+
+// 3B1A:5BC8 ROI ratio calculator.
+int ai_calc_ratio_5bc8(int value, int cost);
 
 typedef int (*AiTargetScoreFn)(const Scenario *sc, int castle_id, void *user);
 
