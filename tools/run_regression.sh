@@ -260,6 +260,12 @@ check "V10 selector stays put"  "\[V10\] select stay=-1" --v10-selftest
 check "V10 selector guards"  "\[V10\] select no_officers=-1 guards=-1,-1,-1,-1,-1,-1,-1" --v10-selftest
 check "V10 real scenario check" "\[V10\] real d30_29=1 d30_0=13 friend30=30 enemy30=27" --v10-selftest
 
+echo "== sub-task 18 (V13): original 0x22D82 army dispatch & 0x2303C 6-branch domestic =="
+check "V13 5BC8 ratio formula"       "\\[V10\\] real .*ratio5bc8=50" --v10-selftest
+check "V13 0x22D82 daimyo safety guard" "\\[V13\\] dispatch30_29=0" --v10-selftest
+check "V13 0x2303C domestic branch"   "\\[V13\\].*domestic30=1" --v10-selftest
+check "V13 original AI turn execution" "\\[AI\\] date=1180/10 domestic=.*attacks=.*captures=.*" --scenario 0 --castle 30 --ai-original --max-frames 1
+
 echo "-------------------------------------------------------------------"
 printf 'TOTAL %d checks: %d passed, %d failed\n' "$((pass + fail))" "$pass" "$fail"
 [ "$fail" -eq 0 ]

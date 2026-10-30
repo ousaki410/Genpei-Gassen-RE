@@ -86,4 +86,37 @@ int ai_choose_adjacent_target_22856(const Scenario *sc, int castle_id,
                                     AiTargetScoreFn score_fn, void *user,
                                     AiAdjacentTarget *out);
 
+// ---------------------------------------------------------------------------
+// V13: Original 0x22D82 army dispatch executor and 31CA:0A22 march worker.
+//
+// In Main.exe at file offset 0x12834 (runtime 0x22D82):
+//   - Verifies governor of source castle;
+//   - Checks destination capacity (strictly <= 15 officers);
+//   - Preserves at least 5 officers if the clan daimyo is present;
+//   - Scales garrison transfer by ROI ratio [0x9216] and stance [0x9220] (div 3 on stance 4, div 2 otherwise);
+//   - Calls 31CA:0A22 to reassign officers and transfer garrison.
+// Returns the number of officers dispatched, or 0 on rejection.
+// ---------------------------------------------------------------------------
+int ai_dispatch_army_22d82(TurnState *ts, Scenario *sc, int src_castle,
+                           int dst_castle, int stance, int roi_ratio);
+
+// ---------------------------------------------------------------------------
+// V13: Original 0x2303C (0x12bb6) 6-branch domestic evaluation and dispatch.
+//
+// In Main.exe at file offset 0x12bb6 / 0x12aee:
+//   - Branch 0: Charity / Peasant Loyalty (Morale boost)
+//   - Branch 1: Fortification Repair (Defense boost)
+//   - Branch 2: Land Development (Kokudaka / Rice boost)
+//   - Branch 3: Military Drill (Morale / Training boost)
+//   - Branch 4: Troop Recruitment (Garrison boost)
+//   - Branch 5: Officer Reward (Loyalty boost)
+// Returns the branch executed (0..5), or -1 if no order was performed.
+// ---------------------------------------------------------------------------
+int ai_domestic_eval_and_act_2303c(TurnState *ts, Scenario *sc, int faction,
+                                   int castle, AiReport *rep);
+
+// Run the full original decision pipeline (V10 0x22856 target selection ->
+// V13 0x22D82 army dispatch / 0x2303C 6-branch domestic orders).
+void ai_run_turn_original(TurnState *ts, Scenario *sc, AiReport *report);
+
 #endif // YPHZ_AI_H

@@ -2080,6 +2080,15 @@ static void v10_selftest_run(void) {
                scenario_nearest_enemy_castle(
                    real, real->castles[30].faction_id, 30),
                ai_calc_ratio_5bc8(100, 100));
+
+        // V13 Dispatch and Domestic verification
+        TurnState ts;
+        turn_init(&ts, real, 0);
+        int d_cnt = ai_dispatch_army_22d82(&ts, real, 30, 29, 4, 80);
+        AiReport rep;
+        memset(&rep, 0, sizeof(rep));
+        int dom_branch = ai_domestic_eval_and_act_2303c(&ts, real, 0, 30, &rep);
+        printf("[V13] dispatch30_29=%d domestic30=%d\n", d_cnt, dom_branch);
     } else {
         printf("[V10] real skipped\n");
     }
@@ -2140,6 +2149,7 @@ int main(int argc, char *argv[]) {
 
     // 子任务 7: non-player AI + historical events + defensive battles.
     bool ai_step = false;          // --ai-step  : run one AI month and log it
+    bool ai_original = false;      // --ai-original : use original V10/V13 decision tree
     int  trigger_event = -1;       // --trigger-event <0..12>
     int  defend_from = -1;         // --defend <from,to> (AI attacks player)
     int  defend_to = -1;
@@ -2348,6 +2358,9 @@ int main(int argc, char *argv[]) {
             }
         } else if (strcmp(argv[i], "--ai-step") == 0) {
             ai_step = true;
+        } else if (strcmp(argv[i], "--ai-original") == 0) {
+            ai_step = true;
+            ai_original = true;
         } else if (strcmp(argv[i], "--trigger-event") == 0 && i + 1 < argc) {
             trigger_event = atoi(argv[++i]);
             if (trigger_event < 0) trigger_event = 0;
@@ -3104,7 +3117,11 @@ int main(int argc, char *argv[]) {
     if (ai_step) {
         TurnResult r;
         turn_end(&g_turn, &g_scenario, &r);
-        ai_run_turn(&g_turn, &g_scenario, &ai_report);
+        if (ai_original) {
+            ai_run_turn_original(&g_turn, &g_scenario, &ai_report);
+        } else {
+            ai_run_turn(&g_turn, &g_scenario, &ai_report);
+        }
         print_ai_report(&ai_report);
         pending_idx = 0;
         printf("[AI] date=%d/%d domestic=%d attacks=%d captures=%d pending=%d\n",
