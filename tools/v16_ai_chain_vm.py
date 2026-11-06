@@ -358,6 +358,29 @@ for lin, hdr, bc in TRAMPOLINES:
           f"got=0x{u16(hlin + 6):04X}")
     check(f"main script 0x{ORDER + bc:05X} non-empty", RT[ORDER + bc] != 0x00)
 
+# ----------------------------------------------- inner trampolines in scripts --
+# 每个主脚本末尾嵌入 trampoline，调用另一个共享主脚本，形成环形链：
+# 0x6D8E (EXEC 0/3/4) -> 头 0x6E56 (EXEC 5) -> 0x6476
+# 0x6476 (EXEC 5)     -> 头 0x657A (EXEC 1/2) -> 0x692E
+# 0x692E (EXEC 1/2)   -> 头 0x69FE (EXEC 0/3/4) -> 0x6D8E
+INNER_TRAMPOLINES = [
+    (0x6D8E, 0x00BC, 0x6E56, "EXEC 5"),
+    (0x692E, 0x00C4, 0x69FE, "EXEC 0/3/4"),
+    (0x6476, 0x00F8, 0x657A, "EXEC 1/2"),
+]
+for script_off, inner_off, called_hdr, called_name in INNER_TRAMPOLINES:
+    lin = ORDER + script_off + inner_off
+    check(f"inner trampoline script 0x{script_off:04X}+0x{inner_off:04X} lcall 0x38CD:0x0810",
+          RT[lin:lin + 5] == bytes.fromhex("9a 10 08 cd 38"))
+    check(f"inner trampoline calls header 0x{called_hdr:04X} ({called_name})",
+          u16(lin + 5) == called_hdr,
+          f"got=0x{u16(lin + 5):04X}")
+    check(f"inner trampoline resume lcall 0x38CD:0x09A3",
+          RT[lin + 7 : lin + 12] == bytes.fromhex("9a a3 09 cd 38"))
+    check(f"inner trampoline retf stub mov ax,0x{called_hdr:04X}; mov dx,cs; retf",
+          RT[lin + 12 : lin + 18] == bytes.fromhex(f"b8 {called_hdr & 0xff:02x} {(called_hdr >> 8) & 0xff:02x} 8c ca cb"),
+          RT[lin + 12 : lin + 18].hex(" "))
+
 # ------------------------------------------------------------- script VM ----
 check("VM entry 0x394E0 prologue bytes",
       RT[0x394E0 : 0x394F0] == bytes.fromhex("5b 5a 59 45 55 8b ec 83 ec 14 c6 46 fc 1e eb 10"),
