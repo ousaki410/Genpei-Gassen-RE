@@ -1743,7 +1743,7 @@ bash tools/run_regression.sh             # 104 项
 
 V16 对 §11 的地址语义和 V15 的“内层 AI VM”模型做了字节级复核。完整文档见
 `docs/v16/V16_AI_CHAIN_AND_VM.md`，结构校验见 `tools/v16_ai_chain_vm.py`
-（当前 104/104 通过）。
+（当前 120/120 通过）。
 
 ### 12.1 段模型修正
 
@@ -1761,7 +1761,9 @@ V16 对 §11 的地址语义和 V15 的“内层 AI VM”模型做了字节级�
 ### 12.2 已确认的 act 调度链
 
 ```text
-act0 0x23196 / act1 0x231EA / act3 0x23304 / act5 0x2348E
+action 0–5 包装:
+  0/1/2/3 = act0 0x23196 / act1 0x231EA / act3 0x23304 / act5 0x2348E
+  4/5     = 0x234FA / 0x23598 (表 A 55/56)
   -> 0x2303C dispatcher
   -> 六路表 0x23117 (cs:0x2997, CS=0x2078)
   -> 0x23123 / 0x23133 / 0x23140 / 0x2314D / 0x2315E / 0x2316F
@@ -1771,12 +1773,17 @@ act0 0x23196 / act1 0x231EA / act3 0x23304 / act5 0x2348E
   -> 共享主脚本 0x31CA:0x6D8E / 0x692E / 0x6476
 ```
 
-- act0 传入 action 0，act1 传入 1，act3 传入 2，act5 传入 3。
+- act0 传入 action 0，act1 传入 1，act3 传入 2，act5 传入 3；
+  action 4/5 由 `0x234FA`/`0x23598` 传入。六个调用点为
+  `0x231D9/0x23240/0x2336F/0x234E9/0x23586/0x23627`。
 - act2 `0x23250` 与 act4 `0x2337E` **不经过** 0x2303C：act2 直接
   `lcall 0x31CA:0x5A8`，act4 直接 `lcall 0x31CA:0x16/0x68`。
 - 六路处理器最后都跳到公共尾 `0x23181`，再调一次 check `0x227BA` 并 `retf`。
 - 六个执行器的第一条指令是 `call` 到 VM trampoline，因此 §11.7 的
   “`31CA:xxxx` 六种行动的具体效果”应改写为“六个 VM 脚本的具体效果”。
+- `0x281AF`（AI offset `0x7A2F`）有 5 个 4 字节记录，首字指向
+  act4/gate/`0x24CA`/act1/`0x234FA`；但全镜像无静态引用，性质是数据表
+  还是字节码仍为 Grade C（见 V16 文档 §3.4）。
 
 ### 12.3 脚本 VM
 
@@ -1822,6 +1829,7 @@ ctx `0x226E0` → sel `0x22856` → gate `0x22F60` → exec `0x22D82` → check
 python3 tools/v16_ai_chain_vm.py
 ```
 
-校验 104 项：AI 模块入口、M1 thunk/wrapper、表 A/B、六路表/处理器、分发器、
-act 调用点、六个执行器 stub、三个 trampoline/脚本头、VM 入口/表/原生调用、
-ctx/sel/exec/gate/check 序言，以及 ctx/gate 的“无静态入口”负结论。
+校验 120 项：AI 模块入口、M1 thunk/wrapper、表 A/B、六路表/处理器、分发器、
+action 0–5 包装与六个调用点、`0x281AF` 的 5 个 AI 偏移、六个执行器 stub、
+三个 trampoline/脚本头、VM 入口/表/原生调用、ctx/sel/exec/gate/check 序言，
+以及 ctx/gate 的“无静态入口”负结论。

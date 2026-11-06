@@ -2,7 +2,7 @@
 
 **Branch**: `v16-dynamic-trace`
 
-**Prerequisite**: V16 static analysis complete (`docs/v16/V16_AI_CHAIN_AND_VM.md`; `tools/v16_ai_chain_vm.py` 104/104).
+**Prerequisite**: V16 static analysis complete (`docs/v16/V16_AI_CHAIN_AND_VM.md`; `tools/v16_ai_chain_vm.py` 120/120).
 
 **Status**: deferred by user request — static code logic first, dynamic tracing last.
 
@@ -69,12 +69,17 @@ Non-goals: modifying game binaries, re-running the scoring traces, or changing V
 | 10 | `0x226E0` | `0x2078:0x1F60` | **Exec BP** | ctx (secondary chain) | does it ever run? |
 | 11 | `0x22F60` | `0x2078:0x27E0` | **Exec BP** | gate (secondary chain) | does it ever run? |
 | 12 | `0x227BA` | `0x2078:0x203A` | **Exec BP** | check | callers: dispatcher/act2/act4/`0x24916` |
-| 13 | `0x65C6A` | `DS:0x427A` | **Read watch** | table A | index = command ID; record far pointer |
+| 13 | `0x65C6A` | `DS:0x427A` | **Read watch** | table A | index = command ID; 49–56 = action wrappers |
 | 14 | `0x694FE` | `DS:0x7B0E` | **Read watch** | table B | index = screen/overlay ID; record far pointer |
+| 15 | `0x281AF` | `0x2078:0x7A2F` | **Read watch** | 5 × 4-byte AI-offset records | data table vs bytecode; record whether it is read or executed |
 
 ### Watchpoints for the unresolved import table
 - `0x39579` (`lcall es:[bx+0xA]`): record `ES`, `BX`, and the 6-byte record at `ES:BX+0xA`.
 - After the call, record the target `CS:IP`; this identifies the native function and the table base.
+
+### Watchpoint for the `0x281AF` region
+- If `0x281AF` is read as 5 four-byte records, record the indexing code and the caller.
+- If it is executed as VM bytecode, record the opcode stream and the `0x281AF`/`0x281C3` entry point.
 
 ---
 
@@ -84,11 +89,11 @@ Non-goals: modifying game binaries, re-running the scoring traces, or changing V
 [AI 单位行动]
     │
     ▼
-1. 表 A 选出命令函数（act0..act5 或其它）
+1. 表 A 选出 action 0–5 包装（act0/act1/act3/act5/0x234FA/0x23598）或其它命令函数
    → 断点 #13 记录索引与远指针
     │
     ▼
-2. act 函数检查距离/状态/概率
+2. action 包装检查距离/状态/概率
    → 若通过，call 0x2303C（断点 #2）
     │
     ▼
@@ -155,7 +160,7 @@ Suggested dump ranges:
 | `tools/v16_trace_setup.txt` | DOSBox-X debugger commands | **needs update** (old 0x220D BPs) |
 | `tools/v16_gdb_script.gdb` | GDB script (PCem/86Box) | **needs update** |
 | `tools/v16_trace_analyzer.py` | post-hoc log analyzer | present; review against new BP set |
-| `tools/v16_ai_chain_vm.py` | static structural validator | **ready** (104/104) |
+| `tools/v16_ai_chain_vm.py` | static structural validator | **ready** (120/120) |
 
 ---
 
@@ -164,13 +169,14 @@ Suggested dump ranges:
 | Check | Pass Condition |
 |-------|----------------|
 | Table A/B used | Watchpoint #13/#14 hits; index and far pointer recorded |
-| act runs | BP at one of `0x23196/0x231EA/0x23304/0x2348E` hits |
+| action wrappers run | BP at one of `0x23196/0x231EA/0x23304/0x2348E/0x234FA/0x23598` hits |
 | dispatcher runs | BP #2 hits; `[bp+0xA]` ∈ 0–5 |
 | six-way dispatch | BP #3 hits; table word matches `0x29A3…` |
 | executor runs | BP #5 hits at one of the six `0x31CA` targets |
 | VM starts | BP #6 hits; `DX` = caller CS; `BX` = header pointer |
 | main script | BP #7 hits; `[header+6]` ∈ {`0x6D8E`,`0x692E`,`0x6476`} |
 | native import | BP #9 hits; record `ES:BX+0xA` and target |
+| `0x281AF` interpreted | BP #15 either reads the 5 records or executes them as VM opcodes |
 | secondary chain | BP #10/#11 either hits (record stack) or remains silent for a full AI turn (report as negative) |
 
 ---
@@ -181,8 +187,9 @@ Suggested dump ranges:
 2. **Resolve the script import table** base/segment and the meaning of `CX`/`DI`.
 3. **Determine the ctx/gate caller** (runtime callback vs. dead code).
 4. **Map table A/B indexing** (command/screen IDs).
-5. **Build the AI behavior model** (action IDs, target selection, probabilities).
-6. **Update V16 doc** with dynamic evidence and downgrade/upgrade grades accordingly.
+5. **Resolve `0x281AF`** (5-word AI-offset table vs. bytecode) with watchpoint #15.
+6. **Build the AI behavior model** (action IDs, target selection, probabilities).
+7. **Update V16 doc** with dynamic evidence and downgrade/upgrade grades accordingly.
 
 ---
 
@@ -191,7 +198,7 @@ Suggested dump ranges:
 ```bash
 git checkout v16-dynamic-trace
 git add tools/v16_ai_chain_vm.py docs/v16/V16_AI_CHAIN_AND_VM.md docs/v16/V16_DYNAMIC_TRACING_PLAN.md
-git commit -m "V16: correct AI/VM model (seg 0x2078, VM 0x38CD, six-way 0x23117) + 104-check validator"
+git commit -m "V16: correct AI/VM model (seg 0x2078, VM 0x38CD, six-way 0x23117) + 120-check validator"
 git push origin v16-dynamic-trace
 ```
 

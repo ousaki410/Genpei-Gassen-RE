@@ -31,6 +31,9 @@ TABLE_B = 0x694FE     # DS:0x7B0E, 15 far pointers
 SIXWAY = 0x23117      # cs:0x2997 with CS=0x2078
 DISPATCH = 0x2303C
 CHECK = 0x227BA
+ACTION4 = 0x234FA       # table A[55], dispatches action 4
+ACTION5 = 0x23598       # table A[56], dispatches action 5
+DISPATCH_SITES = [0x231D9, 0x23240, 0x2336F, 0x234E9, 0x23586, 0x23627]
 
 ACT = {
     "act0": (0x23196, 0x2A16),
@@ -188,6 +191,8 @@ check("table A entry 49 == act0", entries_a[49] == (0x2A16, 0x2078))
 check("table A entry 50 == act1", entries_a[50] == (0x2A6A, 0x2078))
 check("table A entry 51 == act3", entries_a[51] == (0x2B84, 0x2078))
 check("table A entry 54 == act5", entries_a[54] == (0x2D0E, 0x2078))
+check("table A entry 55 == action4 0x234FA", entries_a[55] == (0x2D7A, 0x2078))
+check("table A entry 56 == action5 0x23598", entries_a[56] == (0x2E18, 0x2078))
 
 entries_b = [far(TABLE_B + 4 * i) for i in range(15)]
 check("table B has 15 entries", len(entries_b) == 15)
@@ -247,6 +252,56 @@ check("act2 calls check 0x227BA", call_lin(0x232F7, AI) == CHECK,
       f"target=0x{call_lin(0x232F7, AI):05X}")
 check("act4 calls check 0x227BA", call_lin(0x23481, AI) == CHECK,
       f"target=0x{call_lin(0x23481, AI):05X}")
+
+# action 4/5 wrappers (table A[55]/[56]); distinct from act4/act5.
+check("action4 wrapper 0x234FA prologue", prologue(ACTION4))
+check("action5 wrapper 0x23598 prologue", prologue(ACTION5))
+check("action4 sets action=4", RT[0x2357A:0x2357D] == bytes.fromhex("b8 04 00"),
+      RT[0x2357A:0x2357D].hex(" "))
+check("action5 sets action=5", RT[0x2361B:0x2361E] == bytes.fromhex("b8 05 00"),
+      RT[0x2361B:0x2361E].hex(" "))
+check("action4 calls dispatcher 0x2303C", call_lin(0x23586, AI) == DISPATCH,
+      f"target=0x{call_lin(0x23586, AI):05X}")
+check("action5 calls dispatcher 0x2303C", call_lin(0x23627, AI) == DISPATCH,
+      f"target=0x{call_lin(0x23627, AI):05X}")
+check("0x238A8 calls action4 0x234FA", call_lin(0x239D4, AI) == ACTION4,
+      f"target=0x{call_lin(0x239D4, AI):05X}")
+check("0x238A8 calls act5 0x2348E", call_lin(0x2392C, AI) == ACT["act5"][0],
+      f"target=0x{call_lin(0x2392C, AI):05X}")
+
+# Exactly six static near calls to the dispatcher in the AI segment.
+found_sites = []
+for p in range(AI, AI + 0x10000 - 2):
+    if RT[p] == 0xE8 and call_ip(p, AI) == DISPATCH - AI:
+        found_sites.append(p)
+check("dispatcher has exactly six static call sites", found_sites == DISPATCH_SITES,
+      f"got={[hex(x) for x in found_sites]}")
+far_disp = RT.find(bytes.fromhex("bc 28 78 20"))
+check("no static far pointer/call 0x2078:0x28BC", far_disp < 0,
+      f"hit=0x{far_disp:05X}" if far_disp >= 0 else "")
+
+# 0x281AF: five AI-offset words; interpretation (data table vs bytecode) is Grade C.
+five_281af = [u16(0x281AF + 4 * i) for i in range(5)]
+check("0x281AF five AI-offset words",
+      five_281af == [0x2BFE, 0x27E0, 0x24CA, 0x2A6A, 0x2D7A],
+      str([hex(x) for x in five_281af]))
+check("0x281AF five targets are function prologues",
+      all(prologue(AI + off) for off in five_281af),
+      str([hex(AI + off) for off in five_281af if not prologue(AI + off)]))
+tags_281af = [u16(0x281AF + 4 * i + 2) for i in range(5)]
+check("0x281AF tags are 0x041A/0x061A",
+      tags_281af == [0x041A, 0x041A, 0x061A, 0x041A, 0x041A],
+      str([hex(x) for x in tags_281af]))
+ref_hits = []
+for p in range(AI, AI + 0x10000 - 1):
+    if u16(p) in (0x7A2F, 0x81AF):
+        ref_hits.append(p)
+check("no AI-segment reference to 0x281AF/0x7A2F", not ref_hits,
+      f"hits={[hex(x) for x in ref_hits]}")
+infos.append(
+    "0x281AF: five AI-offset words found; no static AI-segment reference; "
+    "data-table vs bytecode remains Grade C."
+)
 
 # --------------------------------------------------------- order executors --
 for lin, target in EXEC_STUBS:
