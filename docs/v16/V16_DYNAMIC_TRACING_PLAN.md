@@ -4,7 +4,7 @@
 
 **Prerequisite**: V16 static analysis complete (`docs/v16/V16_AI_CHAIN_AND_VM.md`; `tools/v16_ai_chain_vm.py` 138/138).
 
-**Status**: deferred by user request — static code logic first, dynamic tracing last.
+**Status**: in progress — static analysis complete (138/138), dynamic tracing ready.
 
 > **⚠ Supersedes the earlier V16 plan.** The previous plan targeted task ID `0x08`, resolver `0x31CA:0x7C41`, and an "AI VM" at segment `0x220D`. Those assumptions were disproven:
 > - Real AI/event segment: **`0x2078`**.

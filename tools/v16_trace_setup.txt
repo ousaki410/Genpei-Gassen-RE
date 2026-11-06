@@ -1,82 +1,123 @@
-# DOSBox-X Debugger Script for Genpei Gassen AI Dispatch Tracing
+# DOSBox-X Debugger Script for Genpei Gassen AI Dispatch Tracing (V16 corrected)
 # Usage: 在 DOSBox-X 调试器中逐行粘贴，或用 `source` 命令加载
+# 基于 V16 静态分析：AI 段 = 0x2078，VM = 0x38CD:0x0810，六路表 = 0x23117
 
 # ============================================================
-# 1. 设置关键断点
+# 1. 设置关键断点 (Exec BP)
 # ============================================================
 
-# 外层 VM 取指循环 - 每条指令执行前断下
-bp 0x31CA:0x7CBC
-# 真正分发指令
-bp 0x31CA:0x7CC3
+# BP #2: 分发器入口 0x2078:0x28BC
+bp 0x2078:0x28BC
 
-# Task 0x08 描述符被读取时 (DS:0x92F8 = 物理 0x6ACF8)
-bpr 0x6ACF8
-bpw 0x6ACF8
+# BP #3: 六路 jmp 0x2078:0x2992 (cs:[bx+0x2997])
+bp 0x2078:0x2992
 
-# 惰性解析器入口
-bp 0x31CA:0x7C41
-# 解析器 miss 路径
-bp 0x31CA:0x7C53
+# BP #4: 六路处理器入口 (6 个)
+bp 0x2078:0x29A3   # H0 action 0
+bp 0x2078:0x29B3   # H1 action 1
+bp 0x2078:0x29C0   # H2 action 2
+bp 0x2078:0x29CD   # H3 action 3
+bp 0x2078:0x29DE   # H4 action 4
+bp 0x2078:0x29EF   # H5 action 5
 
-# AI VM 操作码表基址被访问
-bpr 0x220D0
-bpr 0x220E0  # opcode 0x08 入口
+# BP #5: 六个执行器 trampoline (0x31CA:xxxx)
+bp 0x31CA:0x044A   # EXEC 0
+bp 0x31CA:0x0458   # EXEC 1
+bp 0x31CA:0x0474   # EXEC 2
+bp 0x31CA:0x0FFC   # EXEC 3
+bp 0x31CA:0x100A   # EXEC 4
+bp 0x31CA:0x145A   # EXEC 5
+
+# BP #6: VM 主入口 0x38CD:0x0810
+bp 0x38CD:0x0810
+
+# BP #7: VM mov bx,[bx] 0x38CD:0x083B
+bp 0x38CD:0x083B
+
+# BP #8: VM 第一个 opcode 分派 0x38CD:0x0873
+bp 0x38CD:0x0873
+
+# BP #9: VM 原生导入调用 lcall es:[bx+0xA] 0x38CD:0x08A9
+bp 0x38CD:0x08A9
+
+# BP #10: ctx (次级链) 0x2078:0x1F60
+bp 0x2078:0x1F60
+
+# BP #11: gate (次级链) 0x2078:0x27E0
+bp 0x2078:0x27E0
+
+# BP #12: check 0x2078:0x203A
+bp 0x2078:0x203A
+
+# action 包装函数入口 (可选，记录哪个 action 触发)
+bp 0x2078:0x2A16   # act0
+bp 0x2078:0x2A6A   # act1
+bp 0x2078:0x2B84   # act3
+bp 0x2078:0x2D0E   # act5
+bp 0x2078:0x2D7A   # action 4 wrapper
+bp 0x2078:0x2E18   # action 5 wrapper
 
 # ============================================================
-# 2. 条件断点辅助：记录 task ID 值
+# 2. 内存读监视 (Read watch)
 # ============================================================
-# 在 VM_FETCH 处，检查 AL (opcode) 是否为 0x08
-# DOSBox-X 不直接支持条件断点，需手动检查：
-#   bp 0x31CA:0x7CBC
-#   运行到断点 -> r -> 查看 AL
+
+# BP #1: 六路表读监视 0x23117 (物理/线性)
+bpr 0x23117
+
+# BP #13: 表 A 读监视 DS:0x427A = 线性 0x65C6A
+bpr 0x65C6A
+
+# BP #14: 表 B 读监视 DS:0x7B0E = 线性 0x694FE
+bpr 0x694FE
+
+# BP #15: 0x281AF 5 个 4 字节记录 (AI offset 0x7A2F)
+bpr 0x281AF
 
 # ============================================================
 # 3. 自动跟踪日志
 # ============================================================
 log v16_trace.log
-# 可选：只记录关键区域
-# trace 1000  # 单步 1000 条指令
 
 # ============================================================
-# 4. 关键内存监视
+# 4. 关键内存监视 (写监视)
 # ============================================================
-# DS:0x5B90 (模块计数) = 0x619F0+0x5B90 = 0x67580
-# DS:0x5B92 (段缓存) = 0x619F0+0x5B92 = 0x67582
-# 监视 AI 模块索引的缓存写入
-bpw 0x67582
+# DGROUP 基址 0x619F0
+# DS:0x9200-0x9230 AI 全局变量 = 线性 0x6AB00-0x6AB30
+bpr 0x6AB00
+bpr 0x6AB30
 
 # ============================================================
 # 5. 运行建议流程
 # ============================================================
 # 1. 游戏启动到标题画面
 # 2. 开始新游戏 / 进入对局
-# 3. 等待轮到 AI 行动 (观察日志中 task 0x08 被读取)
+# 3. 等待轮到 AI 行动
 # 4. 断点命中顺序预期：
-#    a) bpr 0x6ACF8 (读取 task 0x08 描述符)
-#    b) bp 0x31CA:0x7CBC (VM 取指，AL=0x08)
-#    c) bp 0x31CA:0x7CC3 (分发到 task 0x08 handler)
-#    d) bp 0x31CA:0x7C41 (handler 调用解析器，BX=AI_idx)
-#    e) bp 0x31CA:0x7C53 (解析器 miss，加载 AI 模块)
-#    f) bpw 0x67582 (缓存 AI 段值 0x220D|1)
-#    g) bpr 0x220D0 (进入 AI VM，读取操作码表)
-#    h) 后续 AI VM 执行...
+#    a) action 包装 bp 0x2078:0x2A16/0x2A6A/0x2B84/0x2D0E/0x2D7A/0x2E18
+#    b) bpr 0x65C6A (表 A 读取，记录索引)
+#    c) bp 0x2078:0x28BC (分发器入口，[bp+0xA] = action ID)
+#    d) bpr 0x23117 (六路表读取)
+#    e) bp 0x2078:0x2992 (六路 jmp)
+#    f) bp 0x2078:0x29A3/29B3/29C0/29CD/29DE/29EF (处理器)
+#    g) bp 0x31CA:0x044A/0458/0474/0FFC/100A/145A (执行器)
+#    h) bp 0x38CD:0x0810 (VM 入口)
+#    i) bp 0x38CD:0x083B (header 取指)
+#    j) bp 0x38CD:0x0873 (第一个 opcode 分派)
+#    k) bp 0x38CD:0x08A9 (原生导入 lcall es:[bx+0xA])
+#    l) bp 0x2078:0x1F60 / 0x2078:0x27E0 (ctx/gate 次级链，可选)
 
 # ============================================================
 # 6. 寄存器关注点
 # ============================================================
-# 在解析器入口 (0x398E1):
-#   BX = 模块索引 (应为 AI 模块的索引)
-#   SI = 返回地址 (调用者的后续指令)
-# 在解析器返回 (jmp si 前):
-#   DX = 模块数据段 (应为 0x220D 或 AI 数据段)
-#   AX/DI = 近偏移入口 (cs:0x22C6 表值)
-# AI VM 启动时:
-#   CS = 0x220D
-#   SI = 字节码流指针 (AI 脚本数据区)
+# 分发器 0x2078:0x28BC:
+#   [bp+6]=unit, [bp+8]=targets, [bp+0xA]=action
+# VM 入口 0x38CD:0x0810:
+#   BX = header pointer, DX = caller CS, CX = inline block pointer
+# VM import 0x38CD:0x08A9:
+#   ES = 脚本数据段, BX = 6*CX+DI, 记录 ES:BX+0xA 的远指针目标
 
 # ============================================================
-# 导出追踪后分析
+# 7. 导出追踪后分析
 # ============================================================
-# grep -n "0x6ACF8\|0x7CBC\|0x7CC3\|0x7C41\|0x7C53\|0x220D" v16_trace.log
-# 关注 BX/AX/DX/SI/DI/CS/DS 变化
+# grep -n "0x23117\|0x28BC\|0x2992\|0x38CD:0x0810\|0x38CD:0x08A9\|0x281AF" v16_trace.log
+# 关注 CS:IP、AX/BX/CX/DX/SI/DI/BP/DS/ES 变化
