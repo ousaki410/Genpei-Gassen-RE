@@ -420,7 +420,7 @@ check("gate reads DS:0x9220", RT[0x22F68 : 0x22F6D] == bytes.fromhex("83 3e 20 9
       RT[0x22F68 : 0x22F6D].hex(" "))
 
 # Negative findings: no static far pointer to ctx/gate; no direct call.
-for label, off in (("ctx", 0x1F60), ("gate", 0x27E0)):
+for label, off in (("ctx", 0x1F60), ("gate", 0x27E0), ("act4", 0x2BFE)):
     hits = []
     pat = struct.pack("<HH", off, 0x2078)
     p = 0
@@ -433,7 +433,7 @@ for label, off in (("ctx", 0x1F60), ("gate", 0x27E0)):
     check(f"no static far pointer 0x2078:0x{off:04X} ({label})", not hits,
           f"hits={[hex(h) for h in hits]}")
 
-for label, target in (("ctx", 0x226E0), ("gate", 0x22F60)):
+for label, target in (("ctx", 0x226E0), ("gate", 0x22F60), ("act4", 0x2337E)):
     callers = []
     for p in range(AI, AI + 0x10000 - 2):
         if RT[p] == 0xE8:
@@ -442,6 +442,18 @@ for label, target in (("ctx", 0x226E0), ("gate", 0x22F60)):
                 callers.append(p)
     check(f"no static near call to {label} 0x{target:05X}", not callers,
           f"callers={[hex(c) for c in callers]}")
+
+# act4: no static far call 0x2078:0x2BFE (9a 7e 23 78 20)
+act4_far_hits = []
+p = 0
+while True:
+    p = RT.find(bytes.fromhex("9a 7e 23 78 20"), p)
+    if p < 0:
+        break
+    act4_far_hits.append(p)
+    p += 1
+check("no static far call 0x2078:0x2BFE (act4)", not act4_far_hits,
+      f"hits={[hex(h) for h in act4_far_hits]}")
 
 # ------------------------------------------------------------------ report --
 print("=" * 78)

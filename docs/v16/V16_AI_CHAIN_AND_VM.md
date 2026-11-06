@@ -555,7 +555,7 @@ trampoline 结构（以 `0x38692` 为例）：
 ```
 9a 10 08 cd 38   lcall 0x38CD:0x0810   ; 进入VM，执行被调用脚本头
 <dw header_offset>                     ; 被调用脚本头偏移
-9a a3 09 cd 38   lcall 0x38CD:0x09A3   ; resume/parent 续执行
+9a a3 09 cd 38   lcall 0x38CD:0x09A3   ; VM 返回后继续（0x09A3 实为 0x8A 位操作handler，见§5.4 注释）
 b8 <header_offset>                     ; mov ax, header
 8c ca                                  ; mov dx, cs
 cb                                     ; retf
@@ -692,7 +692,7 @@ trampoline：
 ```asm
 lcall 0x38CD:0x0810     ; pushes far return address = points at header word
 dw    header_offset
-lcall 0x38CD:0x09A3     ; resume/parent continuation (fallback path)
+lcall 0x38CD:0x09A3     ; resume/parent continuation (fallback path; 0x09A3 实为 0x8A 位操作handler，VM 返回协议见§9 第6项)
 mov   ax, header_offset
 mov   dx, cs
 retf
@@ -714,7 +714,7 @@ VM 入口：
 6. `[header+0xA + 4*frame_index]` 取打包栈帧大小；`sub sp` 分配局部帧。
 7. 从内联块 `+3` 开始取第一个 opcode，`jmp cs:[opcode*2]`。
 
-> 说明：trampoline 中 `lcall 0x38CD:0x09A3` 之后的 `mov ax,...; retf` 是**正常返回/父脚本恢复路径**；在“脚本直接返回原调用者”的路径下不会执行。VM 的精确返回协议（`0x09A3` 的栈布局）尚未逐指令闭合，标 Grade B/C；但 trampoline 的字节结构、header/主脚本指针、内联块格式均为 A 级。
+> 说明：trampoline 中 `lcall 0x38CD:0x09A3` 之后的 `mov ax,...; retf` 是**正常返回/父脚本恢复路径**；在“脚本直接返回原调用者”的路径下不会执行。`0x09A3` 本身已确认为 **0x8A opcode 的位操作handler**（位域读取/写入），不是 VM 返回入口。VM 的精确返回协议（脚本如何返回给 trampoline/原调用者）尚未逐指令闭合，标 Grade C；但 trampoline 的字节结构、header/主脚本指针、内联块格式均为 A 级。
 
 ### 5.3 栈帧与字节码模型
 
@@ -785,15 +785,16 @@ lcall es:[bx+0xA]       ; 0x39579
 - **零** 远指针 `0x2078:0x1F60` / `0x2078:0x27E0`。
 - 远指针进入 AI 段的只有表 A（69 项）和表 B（15 项）；两者都**不包含** ctx/gate。
 - 全镜像对字 `0x27E0` 的命中只有 2 处（`0x0B221`、`0x281B3`），均不是远指针/代码入口。
+- **act4 `0x2337E`（AI offset `0x2BFE`）：零近调用、零 `call far 0x2078:0x2BFE`、零远指针数据 `0x2078:0x2BFE`。** act4 不是表 A/表 B 项，也不对应任何已知静态入口。
 
 因此：
 
-> **不能**在静态阶段宣称 ctx/gate 已被某条确定路径调用。它们可能是：
+> **不能**在静态阶段宣称 ctx/gate/act4 已被某条确定路径调用。它们可能是：
 > 1. 运行时构造的回调（UI/对象虚表）；
 > 2. 早期开发遗留、最终未使用的路径；
 > 3. 通过脚本 VM 的导入表/函数 ID 间接调用，但导入表基址尚未闭合。
 
-等级：**C/D**。动态跟踪时优先在 ctx/gate 下断点验证。
+等级：**C/D**。动态跟踪时优先在 ctx/gate/act4 下断点验证。
 
 ### 6.3 与已确认链的关系
 
@@ -833,7 +834,7 @@ python3 tools/v16_ai_chain_vm.py
 当前结果：
 
 ```
-138/138 checks passed
+141/141 checks passed
 RESULT: PASS
 ```
 
@@ -865,10 +866,10 @@ RESULT: PASS
 1. **共享主脚本语义（抽样完成，原生调用未解）**：`0x6D8E` / `0x692E` / `0x6476` 的VM字节码已按操作码表逐条反汇编（§4.3.2），已确认脚本间环形调用（0/3/4→5→1/2→0/3/4）和条件分支结构；但**原生战斗函数（`43B3:xxxx`、`28FD:xxxx`等）如何从VM字节码中被调用**尚未解析：字节码中无直接的外部`lcall` opcode，可能通过脚本头描述符表`[+0xA]`的框架表或数据段函数指针间接实现。标 Grade C。
 2. **ctx/gate 调用者**：运行时回调、对象虚表，还是死代码。
 3. **表 A/表 B 的索引代码**：谁按什么 ID 取表项；表 A 的 49–68 与表 B 的 0–14 如何被选择。
-4. **act4 的外部入口**：act3 已确认内联调用 act2；act4 `0x2337E` 的外部入口尚未定位（action 4/5 包装 `0x234FA`/`0x23598` 已解决，不要与 act4/act5 混淆）。
+4. **act4 的外部入口**：act3 已确认内联调用 act2；act4 `0x2337E` **静态侧零引用**（零近调用、零 `call far 0x2078:0x2BFE`、零远指针数据，不在表 A/B 中），外部入口尚未定位（action 4/5 包装 `0x234FA`/`0x23598` 已解决，不要与 act4/act5 混淆）。
 5. **`0x281AF` 的 5 项**：是运行时/脚本构造的 AI 偏移表，还是字节码/数据？静态侧无引用，索引者未定（Grade C）。
-6. **VM 返回协议**：`0x09A3` 的栈布局与父脚本恢复；`0x0810` vs `0x0820` 的帧类型差异。
-7. **动态确认**：在 ctx `0x226E0`、gate `0x22F60`、VM 入口 `0x394E0`、六路表 `0x23117` 下断点，记录真实 `CS:IP` 与栈。
+6. **VM 返回协议**：`0x09A3` 已确认为 **0x8A opcode 的位操作handler**（非返回入口）。脚本如何返回给 trampoline/原调用者，`0x0810` vs `0x0820` 的帧类型差异，尚未逐指令闭合。
+7. **动态确认**：在 ctx `0x226E0`、gate `0x22F60`、act4 `0x2337E`、VM 入口 `0x394E0`、六路表 `0x23117` 下断点，记录真实 `CS:IP` 与栈。
 
 ---
 
@@ -934,7 +935,7 @@ ff 76 08 ff 76 06 90 0e e8 2e f6 83 c4 04 5e 5f 8b e5 5d cb
 
 | 路径 | 用途 |
 |---|---|
-| `tools/v16_ai_chain_vm.py` | 本文件所有结构断言的校验器（138 项） |
+| `tools/v16_ai_chain_vm.py` | 本文件所有结构断言的校验器（141 项） |
 | `tools/v16_trace_analyzer.py` | 动态跟踪分析器（保留，动态阶段使用） |
 | `tools/v16_gdb_script.gdb` | 动态跟踪 gdb 脚本（保留） |
 | `docs/v16/V16_DYNAMIC_TRACING_PLAN.md` | 动态跟踪计划（保留） |
@@ -942,4 +943,4 @@ ff 76 08 ff 76 06 90 0e e8 2e f6 83 c4 04 5e 5f 8b e5 5d cb
 
 ---
 
-**结论**：AI 调度链的**原生决策层**（action 0–5 包装 + dispatcher/check）、**六路分派层**（0x23117 + 六处理器）、**执行器层**（六个 0x31CA trampoline + 三个共享主脚本）和**脚本 VM 层**（0x38CD + 256 项表）已完成静态闭合。剩余缺口是**主脚本原生调用机制**、**ctx/gate 调用者**、**act4 的外部入口**、**`0x281AF` 表/字节码性质**和**表 A/B 索引代码**；这些属于动态/后续静态阶段。（主脚本字节码已按操作码表抽样反汇编，见 §4.3.2；脚本导入层 `cs:0x1ECA` 描述符表已解析，见 §4.3.1/§5.4，留待动态确认是否被实际调用。）
+**结论**：AI 调度链的**原生决策层**（action 0–5 包装 + dispatcher/check）、**六路分派层**（0x23117 + 六处理器）、**执行器层**（六个 0x31CA trampoline + 三个共享主脚本）和**脚本 VM 层**（0x38CD + 256 项表）已完成静态闭合。剩余缺口是**主脚本原生调用机制**、**ctx/gate 调用者**、**act4 的外部入口（静态零引用，留待动态确认是否为死代码）**、**`0x281AF` 表/字节码性质**和**表 A/B 索引代码**；这些属于动态/后续静态阶段。（主脚本字节码已按操作码表抽样反汇编，见 §4.3.2；脚本导入层 `cs:0x1ECA` 描述符表已解析，见 §4.3.1/§5.4，留待动态确认是否被实际调用。）
