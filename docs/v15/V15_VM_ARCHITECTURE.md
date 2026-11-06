@@ -1,5 +1,9 @@
 # V15 VM Architecture Specification — Two-Level Interpreter
 
+> **⚠ V16 CORRECTION (2026-11-06)**
+>
+> There is **one** script VM: **0x38CD:0x0810**, opcode table **0x38CD:0x0000**. The "inner AI VM" at 0x220D0 is disproven (script stub/header region). The "outer VM at 0x31CA:0x7CBC with table at cs:0" is the same VM addressed with the wrong segment base. The six AI order executors are inline VM scripts at 0x31CA:0x44A/0x458/0x474/0xFFC/0x100A/0x145A, sharing three headers (0x69FE/0x657A/0x60FE). See `docs/v16/V16_AI_CHAIN_AND_VM.md`.
+
 ## Overview
 
 Genpei Gassen uses a **two-level bytecode VM architecture** for game logic and AI:

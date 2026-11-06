@@ -1,5 +1,16 @@
 # V15+ Final Resolution — Genpei Gassen AI Dispatch Chain Complete
 
+> **⚠ V16 CORRECTION (2026-11-06)**
+>
+> This document is retained as a historical milestone, but its AI/VM model is **partly superseded**:
+> - The real AI/event segment is **0x2078**, not 0x220D.
+> - The "inner AI VM" at 0x220D0 is **disproven**; 0x220D0 is a script stub/header region.
+> - The script VM is **0x38CD:0x0810** with its opcode table at **0x38CD:0x0000**.
+> - `cs:0x5789` is the **graphics driver function table**, not a VM dispatch table.
+> - The six-way AI dispatch table is at **0x23117** (`cs:0x2997`, CS=0x2078).
+>
+> See `docs/v16/V16_AI_CHAIN_AND_VM.md` and `tools/v16_ai_chain_vm.py` for the corrected static model.
+
 **Branch**: `v13-scoring-dataflow`  
 **Date**: 2026-11-06  
 **Status**: **ALL OPEN QUESTIONS RESOLVED**

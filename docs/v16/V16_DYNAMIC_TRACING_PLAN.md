@@ -1,14 +1,32 @@
-# V16 Dynamic Tracing Plan — Verify Task ID 0x08 Trigger
+# V16 Dynamic Tracing Plan — Verify the Corrected AI Chain and Script VM
 
-**Branch**: `v13-scoring-dataflow` (new `v16-dynamic-trace` branch recommended)  
-**Prerequisite**: V15+ static analysis complete (AI dispatch chain fully resolved)
+**Branch**: `v16-dynamic-trace`
+
+**Prerequisite**: V16 static analysis complete (`docs/v16/V16_AI_CHAIN_AND_VM.md`; `tools/v16_ai_chain_vm.py` 104/104).
+
+**Status**: deferred by user request — static code logic first, dynamic tracing last.
+
+> **⚠ Supersedes the earlier V16 plan.** The previous plan targeted task ID `0x08`, resolver `0x31CA:0x7C41`, and an "AI VM" at segment `0x220D`. Those assumptions were disproven:
+> - Real AI/event segment: **`0x2078`**.
+> - Real script VM: **`0x38CD:0x0810`**, opcode table **`0x38CD:0x0000`**.
+> - `0x220D0` is a script stub/header region, not an opcode table.
+> - `cs:0x5789` is the **graphics driver** function table.
+> - AI dispatch: act → `0x2303C` → six-way table `0x23117` → six handlers → `0x31CA:0x44A/0x458/0x474/0xFFC/0x100A/0x145A` → inline VM scripts.
 
 ---
 
 ## Objective
 
-**Dynamically confirm** the static hypothesis:
-> Outer VM reads task descriptor `00 e0 04 00 02 08 00 00` at **DS:0x92F8** → dispatch to handler → handler calls lazy resolver with **BX = AI module index** → resolver loads AI module (seg 0x220D) → caches at **DS:0x5B92** → returns → caller jumps to **AI VM entry** → AI VM runs with **CS=0x220D**, fetching opcodes from **cs:0 (0x220D0)**.
+Dynamically confirm the **statically verified** chain and resolve the remaining unknowns:
+
+1. Which `act` function (`0x23196/0x231EA/0x23250/0x23304/0x2337E/0x2348E`) runs for a given AI unit.
+2. Which dispatcher action ID (0–5) reaches the six-way table at `0x23117`.
+3. Which order-executor trampoline (`0x320EA/0x320F8/0x32114/0x32C9C/0x32CAA/0x330FA`) is called.
+4. Which header (`0x69FE/0x657A/0x60FE`) and shared main script (`0x6D8E/0x692E/0x6476`) execute.
+5. Whether the **secondary chain** ctx `0x226E0` / gate `0x22F60` is ever reached (the static analysis found **zero** static callers/far pointers).
+6. The exact script import-table base/segment used by `lcall es:[bx+0xA]` at `0x39579`.
+
+Non-goals: modifying game binaries, re-running the scoring traces, or changing V1/V2 artifacts.
 
 ---
 
@@ -31,98 +49,113 @@
 # 5. (gdb) ai_trace_on
 ```
 
+> The old `tools/v16_gdb_script.gdb` and `tools/v16_trace_setup.txt` may still contain the old `0x220D` breakpoints. Check them against the table below before use; update them in the dynamic phase.
+
 ---
 
-## Key Breakpoints & Watchpoints
+## Key Breakpoints & Watchpoints (V16 corrected)
 
-| # | Address (Linear) | Segment:Offset | Type | Trigger | Expected Values |
-|---|------------------|----------------|------|---------|-----------------|
-| 1 | **0x6ACF8** | DS:0x92F8 | **Read Watch** | Task 0x08 描述符被读取 | `00 e0 04 00 02 08 00 00` |
-| 2 | **0x3995C** | 0x31CA:0x7CBC | **Exec BP** | VM 取指循环每轮 | `AL = 0x08` (task ID) |
-| 3 | **0x39963** | 0x31CA:0x7CC3 | **Exec BP** | `jmp cs:[di]` 分发 | `DI = 0x10` (0x08*2) |
-| 4 | **0x398E1** | 0x31CA:0x7C41 | **Exec BP** | 解析器入口 | `BX = AI模块索引`, `SI = 返回地址` |
-| 5 | **0x398F3** | 0x31CA:0x7C53 | **Exec BP** | 解析器 Miss 路径 | `lcall cs:[bx*2+0x1ECA]` |
-| 6 | **0x398F1** | 0x31CA:0x7C51 | **Exec BP** | 解析器返回前 | `DX = 0x220D`, `AX/DI = 入口偏移` |
-| 7 | **0x67582** | DS:0x5B92 | **Write Watch** | 段缓存更新 | `value = 0x220D \| 1` |
-| 8 | **0x220D0** | 0x220D:0x0000 | **Read Watch** | AI VM 表被访问 | AI 操作码表首次读取 |
-| 9 | **0x220E0** | 0x220D:0x0010 | **Exec BP** | AI opcode 0x08 入口 | AI VM 启动确认 |
+| # | Linear | Segment:Offset | Type | Trigger | Expected / Record |
+|---|--------|----------------|------|---------|-------------------|
+| 1 | `0x23117` | `0x2078:0x2997` | **Read watch** | six-way table read | index = action ID 0–5 |
+| 2 | `0x2303C` | `0x2078:0x28BC` | **Exec BP** | dispatcher entry | `[bp+6]=unit`, `[bp+8]=targets`, `[bp+0xA]=action` |
+| 3 | `0x23112` | `0x2078:0x2992` | **Exec BP** | six-way `jmp cs:[bx+0x2997]` | `AX/SI = action`, `BX = action*2` |
+| 4 | `0x23123/33/40/4D/5E/6F` | `0x2078:0x29A3/…` | **Exec BP** | handler entry | which action handler fires |
+| 5 | `0x320EA/0x320F8/0x32114/0x32C9C/0x32CAA/0x330FA` | `0x31CA:0x044A/0458/0474/0FFC/100A/145A` | **Exec BP** | executor trampoline | stack args: unit, targets, out |
+| 6 | `0x394E0` | `0x38CD:0x0810` | **Exec BP** | VM main entry | `BX` = header pointer, `DX` = caller CS, `CX` = inline block |
+| 7 | `0x3950B` | `0x38CD:0x083B` | **Exec BP** | `mov bx,[bx]` | header offset; next `[bx+6]` = main script |
+| 8 | `0x39543` | `0x38CD:0x0873` | **Exec BP** | first opcode dispatch | `AL` = opcode, `DI = opcode*2` |
+| 9 | `0x39579` | `0x38CD:0x08A9` | **Exec BP** | native import call | `ES:BX+0xA` far pointer; record the target |
+| 10 | `0x226E0` | `0x2078:0x1F60` | **Exec BP** | ctx (secondary chain) | does it ever run? |
+| 11 | `0x22F60` | `0x2078:0x27E0` | **Exec BP** | gate (secondary chain) | does it ever run? |
+| 12 | `0x227BA` | `0x2078:0x203A` | **Exec BP** | check | callers: dispatcher/act2/act4/`0x24916` |
+| 13 | `0x65C6A` | `DS:0x427A` | **Read watch** | table A | index = command ID; record far pointer |
+| 14 | `0x694FE` | `DS:0x7B0E` | **Read watch** | table B | index = screen/overlay ID; record far pointer |
+
+### Watchpoints for the unresolved import table
+- `0x39579` (`lcall es:[bx+0xA]`): record `ES`, `BX`, and the 6-byte record at `ES:BX+0xA`.
+- After the call, record the target `CS:IP`; this identifies the native function and the table base.
 
 ---
 
 ## Expected Execution Sequence
 
 ```
-[游戏进入对局，轮到 AI 行动]
+[AI 单位行动]
     │
     ▼
-1. 外层 VM 从 DS:0x92C8 顺序读取描述符
-   → 读取到 DS:0x92F8 (Task 0x08)
-   → 触发 Watchpoint #1
+1. 表 A 选出命令函数（act0..act5 或其它）
+   → 断点 #13 记录索引与远指针
     │
     ▼
-2. VM_FETCH (0x3995C) 取得 AL=0x08
-   → 触发 BP #2，确认 opcode=0x08
+2. act 函数检查距离/状态/概率
+   → 若通过，call 0x2303C（断点 #2）
     │
     ▼
-3. VM_DISPATCH (0x39963) jmp cs:[di] 
-   → DI=0x10，跳转到 Task 0x08 handler
+3. dispatcher: check -> q=43B3:26D4/50 -> v=28FD:6DD0
+   -> 写 targets[n]=0xFFFF -> jmp cs:[action*2+0x2997]
+   → 断点 #1/#3 记录 action 与表项
     │
     ▼
-4. Task 0x08 handler 内部：push si; mov bx, AI_IDX; call 0x398E1
-   → 触发 BP #4 (RESOLVER_ENTRY)
-   → 记录 BX 值 = AI 模块索引 (假设为 N)
+4. 六路处理器（#4）压参数并 lcall 0x31CA:xxxx
+   → 断点 #5 记录执行器与栈参数
     │
     ▼
-5. 解析器检查 DS:0x5B92[N] → 未缓存
-   → 触发 BP #5 (RESOLVER_MISS)
-   → lcall cs:[N*2+0x1ECA] 加载 AI 模块
+5. 执行器开头 call 0x38692/0x3820E/0x37D92
+   → 这三个 trampoline 进入 VM（#6）
     │
     ▼
-6. AI 模块加载器返回：DX=0x220D, AX=入口偏移
-   → 触发 BP #6 (RESOLVER_RET)
-   → 缓存写入 DS:0x5B92[N] = 0x220D|1
-   → 触发 Watchpoint #7
+6. VM 入口 pop bx/dx/cx；DS=DX；header=[return]；main=[header+6]
+   → 断点 #7 记录 header 与 main script
     │
     ▼
-7. 解析器 jmp si 返回 caller
-   → caller 获得 DS=0x220D, DI=入口偏移
-   → near call/jmp 到 AI VM 入口
+7. VM 从内联块 +3 取第一个 opcode
+   → 断点 #8 记录 opcode 流
     │
     ▼
-8. AI VM 启动：CS=0x220D，从 cs:0 (0x220D0) 取指
-   → 触发 Watchpoint #8
-   → 执行 AI VM opcode 0 (或特定 opcode)
+8. 主脚本执行；遇到原生导入时 lcall es:[bx+0xA]
+   → 断点 #9 记录导入表项与目标
     │
     ▼
-9. 若 AI VM opcode 0x08 为入口
-   → 触发 BP #9 (0x220E0)
-   → 完整链路验证成功 ✅
+9. 次级链（可选）：若 ctx/gate 断点 #10/#11 命中，
+   记录完整调用栈，确认其运行时入口。
 ```
+
+The **primary chain** is steps 1–8. Step 9 is the unresolved secondary chain; a hit there is a major finding, a miss after a full AI turn is also informative (supports the “unused/alternate path” hypothesis).
 
 ---
 
 ## Data to Capture
 
-每个断点命中时记录：
+Each breakpoint hit:
 ```
-TIMESTAMP | BP# | CS:IP | AX | BX | CX | DX | SI | DI | DS | ES | FLAGS | MEM[watch_addr]
+TIMESTAMP | BP# | CS:IP | AX | BX | CX | DX | SI | DI | BP | DS | ES | SS:SP | FLAGS | MEM[watch_addr]
 ```
 
-重点对比：
-- **Resolver ENTRY 的 BX** = AI 模块索引
-- **Resolver RET 的 DX** = 0x220D (或 AI 数据段)
-- **DS:0x5B92 写入值** = 0x220D | 1
-- **AI VM 启动时 CS** = 0x220D
+Focus values:
+- **Dispatcher**: `[bp+6]` unit, `[bp+8]` targets, `[bp+0xA]` action.
+- **Six-way**: action index and table word (`0x29A3/…`).
+- **Executor**: which of the six `0x31CA` targets; stack args.
+- **VM entry**: `BX` header, `DX` caller CS, `CX` inline block pointer, `[header+6]` main script.
+- **VM import**: `ES`, `BX`, the 6-byte record, and the target `CS:IP`.
+- **Secondary chain**: full stack at ctx/gate entry, if hit.
+
+Suggested dump ranges:
+- AI segment `0x20780–0x21000` (table A/B, act functions).
+- Order overlay `0x31CA0–0x38CD0` (executors, headers, main scripts).
+- VM `0x38CD0–0x395D0` (opcode table, entry, dispatch).
+- AI globals `DS:0x9200–0x9230`.
 
 ---
 
 ## Automation Scripts
 
-| File | Purpose |
-|------|---------|
-| `tools/v16_trace_setup.txt` | DOSBox-X 调试器命令集 |
-| `tools/v16_gdb_script.gdb` | GDB 脚本 (PCem/86Box) |
-| `tools/v16_trace_analyzer.py` | 事后日志分析 (待创建) |
+| File | Purpose | Status |
+|------|---------|--------|
+| `tools/v16_trace_setup.txt` | DOSBox-X debugger commands | **needs update** (old 0x220D BPs) |
+| `tools/v16_gdb_script.gdb` | GDB script (PCem/86Box) | **needs update** |
+| `tools/v16_trace_analyzer.py` | post-hoc log analyzer | present; review against new BP set |
+| `tools/v16_ai_chain_vm.py` | static structural validator | **ready** (104/104) |
 
 ---
 
@@ -130,34 +163,38 @@ TIMESTAMP | BP# | CS:IP | AX | BX | CX | DX | SI | DI | DS | ES | FLAGS | MEM[wa
 
 | Check | Pass Condition |
 |-------|----------------|
-| Task 0x08 被读取 | Watchpoint #1 命中，值为 `02 08` |
-| VM 分发正确 | BP #2 AL=0x08，BP #3 DI=0x10 |
-| 解析器被调用 | BP #4 BX = 非零模块索引 |
-| AI 模块加载 | BP #5 命中，随后 BP #6 DX=0x220D |
-| 缓存更新 | Watchpoint #7 值 = 0x220D/0x220D|1 |
-| AI VM 启动 | Watchpoint #8 或 BP #9 命中，CS=0x220D |
+| Table A/B used | Watchpoint #13/#14 hits; index and far pointer recorded |
+| act runs | BP at one of `0x23196/0x231EA/0x23304/0x2348E` hits |
+| dispatcher runs | BP #2 hits; `[bp+0xA]` ∈ 0–5 |
+| six-way dispatch | BP #3 hits; table word matches `0x29A3…` |
+| executor runs | BP #5 hits at one of the six `0x31CA` targets |
+| VM starts | BP #6 hits; `DX` = caller CS; `BX` = header pointer |
+| main script | BP #7 hits; `[header+6]` ∈ {`0x6D8E`,`0x692E`,`0x6476`} |
+| native import | BP #9 hits; record `ES:BX+0xA` and target |
+| secondary chain | BP #10/#11 either hits (record stack) or remains silent for a full AI turn (report as negative) |
 
 ---
 
 ## Next Steps After Verification
 
-1. **提取 AI VM 字节码流** — 从 AI 段数据区 (0x8DD4 链表等) dump 完整脚本
-2. **建立 AI 行为模型** — 将 AI VM opcode 映射到游戏动作 (移动、攻击、施法等)
-3. **对抗验证** — 修改字节码/描述符，观察 AI 行为变化
-4. **完整 RE 报告 V16** — 静态+动态双轨闭环
+1. **Decode the shared main scripts** `0x6D8E/0x692E/0x6476` with the VM opcode table and the captured import calls.
+2. **Resolve the script import table** base/segment and the meaning of `CX`/`DI`.
+3. **Determine the ctx/gate caller** (runtime callback vs. dead code).
+4. **Map table A/B indexing** (command/screen IDs).
+5. **Build the AI behavior model** (action IDs, target selection, probabilities).
+6. **Update V16 doc** with dynamic evidence and downgrade/upgrade grades accordingly.
 
 ---
 
 ## Branch Strategy
 
 ```bash
-git checkout -b v16-dynamic-trace
-# 提交 tracing scripts
-git add tools/v16_*.txt tools/v16_*.gdb docs/v16/
-git commit -m "V16: Dynamic tracing setup for task ID 0x08 trigger verification"
+git checkout v16-dynamic-trace
+git add tools/v16_ai_chain_vm.py docs/v16/V16_AI_CHAIN_AND_VM.md docs/v16/V16_DYNAMIC_TRACING_PLAN.md
+git commit -m "V16: correct AI/VM model (seg 0x2078, VM 0x38CD, six-way 0x23117) + 104-check validator"
 git push origin v16-dynamic-trace
 ```
 
 ---
 
-*Prepared for dynamic validation phase. Static analysis (V15+) provides 100% coverage of code paths; dynamic tracing closes the loop on runtime values.*
+*Static analysis is the source of truth until dynamic evidence is captured. Do not treat the old 0x220D/task-0x08 hypothesis as valid.*

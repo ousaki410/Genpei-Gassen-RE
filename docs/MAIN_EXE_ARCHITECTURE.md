@@ -1738,3 +1738,90 @@ bash tools/run_regression.sh             # 104 项
 5. 月度 AI 顶层调用者（可能位于未驻留的覆盖层）；
 6. `30280` 的 from/to/owner 命名仍需更多调用者证据；
 7. 无 DOSBox-X，全部结论仅为静态/自测，不是原版动态验证。
+
+## 12. V16：AI 调度链与脚本 VM 修正
+
+V16 对 §11 的地址语义和 V15 的“内层 AI VM”模型做了字节级复核。完整文档见
+`docs/v16/V16_AI_CHAIN_AND_VM.md`，结构校验见 `tools/v16_ai_chain_vm.py`
+（当前 104/104 通过）。
+
+### 12.1 段模型修正
+
+| 模块 | 运行时段 | 线性基址 |
+|---|---|---|
+| AI/事件代码 | **`0x2078`** | `0x20780` |
+| Order/System overlay | `0x31CA` | `0x31CA0` |
+| Script VM | `0x38CD` | `0x38CD0` |
+| DGROUP | `0x619F` | `0x619F0` |
+
+§11 中的线性地址 `0x226E0`、`0x22856`、`0x22F60`、`0x2303C` 仍然正确；错误
+的是把它们标成段 `0x220D`。AI 段内部偏移为 `linear - 0x20780`。`0x220D0`
+不是 256 项操作码表，而是脚本桩/脚本头/内联字节码区；“内层 AI VM”不成立。
+
+### 12.2 已确认的 act 调度链
+
+```text
+act0 0x23196 / act1 0x231EA / act3 0x23304 / act5 0x2348E
+  -> 0x2303C dispatcher
+  -> 六路表 0x23117 (cs:0x2997, CS=0x2078)
+  -> 0x23123 / 0x23133 / 0x23140 / 0x2314D / 0x2315E / 0x2316F
+  -> 0x31CA:0x44A / 0x458 / 0x474 / 0xFFC / 0x100A / 0x145A
+  -> 内联 VM 脚本 trampoline
+     (call 0x38692 / 0x3820E / 0x37D92 -> lcall 0x38CD:0x0810)
+  -> 共享主脚本 0x31CA:0x6D8E / 0x692E / 0x6476
+```
+
+- act0 传入 action 0，act1 传入 1，act3 传入 2，act5 传入 3。
+- act2 `0x23250` 与 act4 `0x2337E` **不经过** 0x2303C：act2 直接
+  `lcall 0x31CA:0x5A8`，act4 直接 `lcall 0x31CA:0x16/0x68`。
+- 六路处理器最后都跳到公共尾 `0x23181`，再调一次 check `0x227BA` 并 `retf`。
+- 六个执行器的第一条指令是 `call` 到 VM trampoline，因此 §11.7 的
+  “`31CA:xxxx` 六种行动的具体效果”应改写为“六个 VM 脚本的具体效果”。
+
+### 12.3 脚本 VM
+
+- 入口：`0x38CD:0x0810`（线性 `0x394E0`）；变体 `0x38CD:0x0820`；父脚本
+  恢复点 `0x38CD:0x09A3`。
+- 操作码表：`0x38CD:0x0000`（线性 `0x38CD0`），256 项，表项范围
+  `0x0200–0x1E22`，全部落在 `0x38ED0–0x3ABFF`；操作码 0x00 → `0x045D`，
+  0xE7 → `0x0200`，最大 `0x1E22`。
+- 分派：`lodsb; shl di,1; jmp word ptr cs:[di]`。
+- 调用约定：trampoline `lcall 0x38CD:0x0810` 后跟脚本头指针；VM 入口
+  `pop bx/dx/cx`，`DS=DX`，`bx=[bx]`（头），`si=[bx+6]`（主脚本），`cx` 指向
+  内联块；内联块格式 `db frame_index; dw value; db first_opcode; ...`。
+- 原生导入：`lcall es:[bx+0xA]`（`0x39579`），6 字节记录，`bx=6*CX+DI`；
+  精确表基址/数据段仍未闭合（Grade C）。
+
+### 12.4 次级原生链（未闭合）
+
+ctx `0x226E0` → sel `0x22856` → gate `0x22F60` → exec `0x22D82` → check
+`0x227BA` 的结构已确认，但：
+
+- 全镜像**零**近调用到 ctx/gate；
+- **零**远指针 `0x2078:0x1F60` / `0x2078:0x27E0`；
+- 进入 AI 段的远指针只有表 A（`0x65C6A`，69 项）和表 B（`0x694FE`，15 项），
+  两者都不含 ctx/gate。
+
+因此 ctx/gate 的调用者必须动态确认，不能静态宣称已接通。V10 的 §11.2
+“战略链”应拆成两条：act 链（已闭合）与 ctx/gate 链（C/D 级）。
+
+### 12.5 V15/V15P 关键修正
+
+- `cs:0x5789` = **图形驱动函数表**（41 个远指针），不是 VM 分派表；
+  `0x374DA` 绑定的是 `GRAPHIC DRIVER V1.`。
+- `0x220D0` 不是操作码表；“内层 AI VM”假设被证伪。
+- 六路表是 `0x23117`，不是 `0x24A67`。
+- 表 A 的 49–68 项是原生 AI/事件命令函数；表 B 第 4 项是 M1 wrapper
+  `0x24B5E`（`nop; push cs; call 0x226C6; retf`）。
+- `0x226C6` 是 M1 thunk：五个 push 参数（`0xD8/0x178/0x118/0x10/0x9202`）
+  + `lcall 0x3B1A:0x1A` + `retf`。
+
+### 12.6 复现
+
+```bash
+python3 tools/v16_ai_chain_vm.py
+```
+
+校验 104 项：AI 模块入口、M1 thunk/wrapper、表 A/B、六路表/处理器、分发器、
+act 调用点、六个执行器 stub、三个 trampoline/脚本头、VM 入口/表/原生调用、
+ctx/sel/exec/gate/check 序言，以及 ctx/gate 的“无静态入口”负结论。

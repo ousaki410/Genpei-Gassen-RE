@@ -1,5 +1,9 @@
 # V15 Final Report: Genpei Gassen (PC-98 KOEI) Main.exe — AI Dispatch Chain Resolution
 
+> **⚠ V16 CORRECTION (2026-11-06)**
+>
+> The AI segment is **0x2078**, not 0x220D. The "inner AI VM" at 0x220D0 is disproven; 0x220D0 is a script stub/header region. The real script VM is **0x38CD:0x0810** (opcode table 0x38CD:0x0000), and the six-way AI dispatch table is **0x23117**. See `docs/v16/V16_AI_CHAIN_AND_VM.md`.
+
 **Branch**: `v13-scoring-dataflow`  
 **Date**: 2026-11-05  
 **Method**: Static analysis only; no execution; three-layer mapping fully validated
