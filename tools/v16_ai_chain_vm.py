@@ -303,6 +303,37 @@ infos.append(
     "data-table vs bytecode remains Grade C."
 )
 
+# ---------------------------------------------------------- script headers --
+# VM segment cs:0x1ECA descriptor table: 27 real entries + 5 empty (0x0000:0x0000).
+DESC = VM + 0x1ECA
+
+
+def dslot(i: int) -> tuple[int, int]:
+    return u16(DESC + 4 * i), u16(DESC + 4 * i + 2)  # (off, seg)
+
+
+def dlin(i: int) -> int:
+    off, seg = dslot(i)
+    return seg * 16 + off
+
+
+DESC_REAL = range(27)
+check(
+    "desc entries 0-26 header stub pattern (b8 imm16 8c ca cb)",
+    all(RT[dlin(i) + 3 : dlin(i) + 6] == b"\x8c\xca\xcb" for i in DESC_REAL),
+    ", ".join(hex(dlin(i)) for i in DESC_REAL
+              if RT[dlin(i) + 3 : dlin(i) + 6] != b"\x8c\xca\xcb"),
+)
+check(
+    "desc entries 0-26 main script pointer != 0xFFFF",
+    all(u16(dlin(i) + 6) != 0xFFFF for i in DESC_REAL),
+    ", ".join(hex(dlin(i)) for i in DESC_REAL if u16(dlin(i) + 6) == 0xFFFF),
+)
+check("desc[7]  = 0x2078:0x789F (AI script header 0)", dslot(7) == (0x789F, 0x2078))
+check("desc[10] = 0x2078:0x84C6 (AI script header 3)", dslot(10) == (0x84C6, 0x2078))
+check("desc[17] = 0x31CA:0x60FE (executor header)", dslot(17) == (0x60FE, 0x31CA))
+check("desc[20] = 0x31CA:0x6E56 (executor header)", dslot(20) == (0x6E56, 0x31CA))
+
 # --------------------------------------------------------- order executors --
 for lin, target in EXEC_STUBS:
     check(

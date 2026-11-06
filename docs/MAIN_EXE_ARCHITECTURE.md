@@ -1743,7 +1743,7 @@ bash tools/run_regression.sh             # 104 项
 
 V16 对 §11 的地址语义和 V15 的“内层 AI VM”模型做了字节级复核。完整文档见
 `docs/v16/V16_AI_CHAIN_AND_VM.md`，结构校验见 `tools/v16_ai_chain_vm.py`
-（当前 120/120 通过）。
+（当前 126/126 通过）。
 
 ### 12.1 段模型修正
 
@@ -1829,7 +1829,7 @@ ctx `0x226E0` → sel `0x22856` → gate `0x22F60` → exec `0x22D82` → check
 python3 tools/v16_ai_chain_vm.py
 ```
 
-校验 120 项：AI 模块入口、M1 thunk/wrapper、表 A/B、六路表/处理器、分发器、
+校验 126 项：AI 模块入口、M1 thunk/wrapper、表 A/B、六路表/处理器、分发器、
 action 0–5 包装与六个调用点、`0x281AF` 的 5 个 AI 偏移、六个执行器 stub、
 三个 trampoline/脚本头、VM 入口/表/原生调用、ctx/sel/exec/gate/check 序言，
 以及 ctx/gate 的“无静态入口”负结论。

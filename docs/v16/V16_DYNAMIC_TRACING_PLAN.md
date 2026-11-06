@@ -2,7 +2,7 @@
 
 **Branch**: `v16-dynamic-trace`
 
-**Prerequisite**: V16 static analysis complete (`docs/v16/V16_AI_CHAIN_AND_VM.md`; `tools/v16_ai_chain_vm.py` 120/120).
+**Prerequisite**: V16 static analysis complete (`docs/v16/V16_AI_CHAIN_AND_VM.md`; `tools/v16_ai_chain_vm.py` 126/126).
 
 **Status**: deferred by user request — static code logic first, dynamic tracing last.
 
@@ -160,7 +160,7 @@ Suggested dump ranges:
 | `tools/v16_trace_setup.txt` | DOSBox-X debugger commands | **needs update** (old 0x220D BPs) |
 | `tools/v16_gdb_script.gdb` | GDB script (PCem/86Box) | **needs update** |
 | `tools/v16_trace_analyzer.py` | post-hoc log analyzer | present; review against new BP set |
-| `tools/v16_ai_chain_vm.py` | static structural validator | **ready** (120/120) |
+| `tools/v16_ai_chain_vm.py` | static structural validator | **ready** (126/126) |
 
 ---
 
@@ -198,7 +198,7 @@ Suggested dump ranges:
 ```bash
 git checkout v16-dynamic-trace
 git add tools/v16_ai_chain_vm.py docs/v16/V16_AI_CHAIN_AND_VM.md docs/v16/V16_DYNAMIC_TRACING_PLAN.md
-git commit -m "V16: correct AI/VM model (seg 0x2078, VM 0x38CD, six-way 0x23117) + 120-check validator"
+git commit -m "V16: correct AI/VM model (seg 0x2078, VM 0x38CD, six-way 0x23117) + 126-check validator"
 git push origin v16-dynamic-trace
 ```
 
