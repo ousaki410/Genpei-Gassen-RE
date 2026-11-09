@@ -455,6 +455,30 @@ while True:
 check("no static far call 0x2078:0x2BFE (act4)", not act4_far_hits,
       f"hits={[hex(h) for h in act4_far_hits]}")
 
+# ------------------------------------------------------------------ 0x1055 native functions --
+SEG_1055 = 0x10550
+NATIVE_1055 = {
+    "0x13a4": 0x13a4,   # module init
+    "0x1058": 0x1058,   # 32-bit div (quotient)
+    "0x1456": 0x1456,   # 32-bit div (remainder)
+    "0x0f8c": 0x0f8c,   # 32-bit div (quotient variant)
+    "0x13f6": 0x13f6,   # 32-bit div (quotient w/ overflow, retf 8)
+}
+# 0x11f0 prologue is 59 5a 8b ec (pop cx/pop dx/mov bp,sp) — return helper, not standard prologue
+for name, off in NATIVE_1055.items():
+    lin = SEG_1055 + off
+    check(f"0x1055:0x{off} prologue (55 8b ec)",
+          RT[lin:lin + 3] == bytes.fromhex("55 8b ec"),
+          f"got={RT[lin:lin+3].hex(' ')}")
+
+check("0x1055:0x13a4 retf", RT[SEG_1055 + 0x13c2] == 0xCB,
+      f"got=0x{RT[SEG_1055 + 0x13c2]:02X}")
+check("0x1055:0x11f0 retf", RT[SEG_1055 + 0x1202] == 0xCB,
+      f"got=0x{RT[SEG_1055 + 0x1202]:02X}")
+check("0x1055:0x13f6 retf 8",
+      RT[SEG_1055 + 0x1452:SEG_1055 + 0x1455] in (bytes.fromhex("cb 08 00"), bytes.fromhex("ca 08 00")),
+      RT[SEG_1055 + 0x1452:SEG_1055 + 0x1455].hex(" "))
+
 # ------------------------------------------------------------------ report --
 print("=" * 78)
 print(f"V16 AI chain / script VM validator  ({rt_path})")
