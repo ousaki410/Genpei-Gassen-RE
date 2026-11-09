@@ -2,9 +2,9 @@
 
 **Branch**: `v16-dynamic-trace`
 
-**Prerequisite**: V16 static analysis complete (`docs/v16/V16_AI_CHAIN_AND_VM.md`; `tools/v16_ai_chain_vm.py` 149/149).
+**Prerequisite**: V16 static analysis complete (`docs/v16/V16_AI_CHAIN_AND_VM.md`; `tools/v16_ai_chain_vm.py` 155/155).
 
-**Status**: in progress — static analysis complete (149/149), dynamic tracing ready.
+**Status**: in progress — static analysis complete (155/155), dynamic tracing ready.
 
 > **⚠ Supersedes the earlier V16 plan.** The previous plan targeted task ID `0x08`, resolver `0x31CA:0x7C41`, and an "AI VM" at segment `0x220D`. Those assumptions were disproven:
 > - Real AI/event segment: **`0x2078`**.
@@ -160,7 +160,7 @@ Suggested dump ranges:
 | `tools/v16_trace_setup.txt` | DOSBox-X debugger commands | **needs update** (old 0x220D BPs) |
 | `tools/v16_gdb_script.gdb` | GDB script (PCem/86Box) | **needs update** |
 | `tools/v16_trace_analyzer.py` | post-hoc log analyzer | present; review against new BP set |
-| `tools/v16_ai_chain_vm.py` | static structural validator | **ready** (149/149) |
+| `tools/v16_ai_chain_vm.py` | static structural validator | **ready** (155/155) |
 
 ---
 
@@ -198,7 +198,7 @@ Suggested dump ranges:
 ```bash
 git checkout v16-dynamic-trace
 git add tools/v16_ai_chain_vm.py docs/v16/V16_AI_CHAIN_AND_VM.md docs/v16/V16_DYNAMIC_TRACING_PLAN.md
-git commit -m "V16: correct AI/VM model (seg 0x2078, VM 0x38CD, six-way 0x23117) + 149-check validator"
+git commit -m "V16: correct AI/VM model (seg 0x2078, VM 0x38CD, six-way 0x23117) + 155-check validator"
 git push origin v16-dynamic-trace
 ```
 

@@ -410,6 +410,30 @@ check("VM opcode 0xE7 is the low outlier 0x0200",
       vm_words[0xE7] == 0x0200 and min(vm_words) == 0x0200)
 check("VM max handler 0x1E22", max(vm_words) == 0x1E22, f"got=0x{max(vm_words):04X}")
 
+# ------------------------------------------------- native call triggers -------
+# Shared main scripts' native call trigger points (opcode whose handler contains lcall)
+NATIVE_OPCODES = {
+    0x88: 0x1712,   # handler 0x38CD:0x1712 (0x3A3E2), lcall 0x1055:0x11F0
+    0xD9: 0x17EA,   # handler 0x38CD:0x17EA (0x3A4BA), lcall 0x1055:0x1058
+    0xDD: 0x08BA,   # handler 0x38CD:0x08BA (0x3958A), lcall 0x0BD5:0x010B
+    0xE4: 0x1A18,   # handler 0x38CD:0x1A18 (0x3A6E8), lcall 0x1055:0x0F8C
+    0xE7: 0x0200,   # handler 0x38CD:0x0200 (0x38ED0), lcall 0x9211:0x7210
+}
+for op, handler_off in NATIVE_OPCODES.items():
+    check(f"VM opcode 0x{op:02X} -> handler 0x38CD:0x{vm_words[op]:04X}",
+          vm_words[op] == handler_off,
+          f"got=0x{vm_words[op]:04X}")
+
+# Shared main scripts' native call trigger points
+NATIVE_TRIGGER_SITES = [
+    ("EXEC0/3/4 (0x6D8E)", 0x6D8E, 0x0020, 0x88, 0x93),   # opcode 0x88, operand 0x93
+]
+for script_name, script_off, op_off, op, operand in NATIVE_TRIGGER_SITES:
+    lin = ORDER + script_off + op_off
+    check(f"native trigger {script_name} offset 0x{op_off:04X}: opcode 0x{op:02X}",
+          RT[lin] == op and RT[lin + 1] == operand,
+          f"got op=0x{RT[lin]:02X} operand=0x{RT[lin+1]:02X}")
+
 # ---------------------------------------------------- secondary native chain --
 for name, lin in (("ctx", 0x226E0), ("sel", 0x22856), ("exec", 0x22D82),
                   ("gate", 0x22F60), ("check", 0x227BA)):
