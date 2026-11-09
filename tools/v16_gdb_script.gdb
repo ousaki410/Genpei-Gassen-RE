@@ -37,7 +37,7 @@ end
 break *0x2303C
 commands
   silent
-  printf "\n>>> BP#2 DISPATCHER: unit=[bp+6]=0x%x targets=[bp+8]=0x%x action=[bp+0xA]=0x%x\n",
+  printf "\n>>> BP#2 DISPATCHER: unit=0x%x targets=0x%x action=0x%x\n",
          *(short*)($bp+6), *(short*)($bp+8), *(short*)($bp+0xA)
   continue
 end
@@ -155,10 +155,9 @@ end
 break *0x39579
 commands
   silent
-  printf "\n>>> BP#9 VM_IMPORT_CALL: ES=0x%x BX=0x%x DI=0x%x\n", $es, $bx, $di
-  printf "    6-byte record at ES:BX+0xA: "
   set $off = $es * 16 + $bx + 0xA
-  printf "off=0x%x seg=0x%x\n", *(short*)$off, *(short*)($off + 2)
+  printf "\n>>> BP#9 VM_IMPORT_CALL: ES=0x%x BX=0x%x DI=0x%x off=0x%x seg=0x%x\n",
+         $es, $bx, $di, *(short*)$off, *(short*)($off + 2)
   continue
 end
 

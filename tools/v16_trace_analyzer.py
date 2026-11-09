@@ -30,8 +30,8 @@ patterns = {
     'bp8_vm_op': re.compile(r'>>> BP#8 VM_OP_DISPATCH: AL=0x([0-9a-fA-F]+) \(opcode\), DI=0x([0-9a-fA-F]+) \(opcode\*2\)'),
     # BP#9 VM native import call
     'bp9_vm_import': re.compile(
-        r'>>> BP#9 VM_IMPORT_CALL: ES=0x([0-9a-fA-F]+) BX=0x([0-9a-fA-F]+) DI=0x([0-9a-fA-F]+)\n'
-        r'    6-byte record at ES:BX\+0xA: off=0x([0-9a-fA-F]+) seg=0x([0-9a-fA-F]+)'),
+        r'>>> BP#9 VM_IMPORT_CALL: ES=0x([0-9a-fA-F]+) BX=0x([0-9a-fA-F]+) DI=0x([0-9a-fA-F]+) off=0x([0-9a-fA-F]+) seg=0x([0-9a-fA-F]+)',
+    ),
     # BP#10 ctx entry
     'bp10_ctx': re.compile(r'>>> BP#10 CTX_ENTRY'),
     # BP#11 gate entry
